@@ -333,6 +333,47 @@ try:
                 st.metric("Gain/Loss", f"{gain_loss:+.2f}%", delta=f"{gain_loss:+.2f}%", delta_color=delta_color)
             else:
                 st.metric("Gain/Loss", "N/A")
+
+        # Notes section for the selected stock
+        st.divider()
+        st.subheader(f"📝 Notes for {ticker}")
+
+        with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+            notes = db.get_stock_notes(stock_id)
+
+        notes_container = st.container()
+        if notes:
+            for note in notes:
+                with notes_container:
+                    st.markdown(f"**{note['entry_date']}**")
+                    st.markdown(note['note'])
+                    st.markdown("---")
+        else:
+            st.info("No notes yet for this stock. Add one below to capture your thoughts.")
+
+        form_key = f"add_note_form_{stock_id}"
+        note_input_key = f"note_input_{stock_id}"
+        with st.form(form_key, clear_on_submit=True):
+            note_text = st.text_area(
+                "Add a note",
+                key=note_input_key,
+                height=150,
+                placeholder="Example: Reasons for adding to favorites, catalysts, earnings dates, etc."
+            )
+            submitted = st.form_submit_button("Add note", use_container_width=True)
+
+            if submitted:
+                cleaned_note = note_text.strip()
+                if not cleaned_note:
+                    st.warning("Please enter a note before submitting.")
+                else:
+                    try:
+                        with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+                            db.add_stock_note(stock_id, cleaned_note)
+                        st.success("Note added ✅")
+                        st.rerun()
+                    except Exception as note_err:
+                        st.error(f"Failed to add note: {note_err}")
     else:
         st.info("👆 Click on a row above to select a favorite stock and remove it")
 

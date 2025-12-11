@@ -121,6 +121,16 @@ class RecommendationsDatabase:
             )
         """)
 
+        # Stock table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_note (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_id INTEGER references stock(id),
+                note TEXT,
+                entry_date DATE
+            )
+        """)
+
         # Reference stock rating table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ref_stock_rating (
@@ -1315,4 +1325,48 @@ class RecommendationsDatabase:
         if status:
             return status['status'] == 'STARTED'
         return False
+
+    def add_stock_note(self, stock_id: int, note: str, entry_date: str = None) -> int:
+        """Add a new note for a specific stock."""
+        if entry_date is None:
+            entry_date = date.today().isoformat()
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO stock_note (stock_id, note, entry_date)
+            VALUES (?, ?, ?)
+            """,
+            (stock_id, note, entry_date)
+        )
+
+        conn.commit()
+        note_id = cursor.lastrowid
+        conn.close()
+        return note_id
+
+    def get_stock_notes(self, stock_id: int) -> List[Dict]:
+        """Retrieve all notes for a specific stock."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id, note, entry_date
+            FROM stock_note
+            WHERE stock_id = ?
+            ORDER BY entry_date DESC
+            """,
+            (stock_id,)
+        )
+
+        notes = [
+            {"id": row[0], "note": row[1], "entry_date": row[2]}
+            for row in cursor.fetchall()
+        ]
+
+        conn.close()
+        return notes
 

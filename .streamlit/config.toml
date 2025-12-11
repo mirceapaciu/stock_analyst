@@ -1,0 +1,11 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+port = 8080
+address = "0.0.0.0"
+baseUrlPath = ""
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false

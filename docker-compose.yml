@@ -1,0 +1,39 @@
+services:
+  stock-analysis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock-analysis-app
+    ports:
+      - "8080:8080"
+    environment:
+      # API Keys - Set these via .env file or docker secrets
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_CSE_ID=${GOOGLE_CSE_ID}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - FMP_API_KEY=${FMP_API_KEY}
+      # Optional settings
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - MAX_PE_RATIO=${MAX_PE_RATIO:-15.0}
+      - MIN_MARKET_CAP=${MIN_MARKET_CAP:-1000000000}
+      - MAX_WORKERS=${MAX_WORKERS:-2}
+    volumes:
+      # Persist databases
+      - stock-db:/app/data/db
+      # Persist logs
+      - stock-logs:/app/logs
+      # Persist temp files
+      - stock-temp:/app/temp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  stock-db:
+  stock-logs:
+  stock-temp:

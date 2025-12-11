@@ -1,0 +1,30 @@
+﻿{
+    "containers":  {
+                       "stock-analysis":  {
+                                   "image": "mirceapaciu/stock-analysis-app:latest",
+                                   "environment":  {
+                                                       "MAX_WORKERS": "2",
+                                                       "OPENAI_MODEL": "gpt-4o-mini",
+                                                       "MAX_PE_RATIO": "15.0",
+                                                       "MIN_MARKET_CAP": "1000000000",
+                                                       "S3_BUCKET": "stock-analysis-data-3666",
+                                                       "AWS_DEFAULT_REGION": "eu-central-1"
+                                                   },
+                                   "ports":  {
+                                                 "8080": "HTTP"
+                                             }
+                               }
+                   },
+    "publicEndpoint":  {
+                           "containerName": "stock-analysis",
+                           "containerPort":  8080,
+                           "healthCheck":  {
+                                               "path": "/_stcore/health",
+                                               "intervalSeconds":  5,
+                                               "timeoutSeconds":  2,
+                                               "healthyThreshold":  2,
+                                               "unhealthyThreshold":  2,
+                                               "successCodes": "200-499"
+                                           }
+                       }
+}

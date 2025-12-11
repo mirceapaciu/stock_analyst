@@ -1,0 +1,120 @@
+{
+  "family": "stock-analysis-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::905418213549:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::905418213549:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "stock-analysis",
+      "image": "mirceapaciu/stock-analysis-app:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "MAX_WORKERS",
+          "value": "2"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "value": "your-key"
+        },
+        {
+          "name": "GOOGLE_API_KEY",
+          "value": "your-key"
+        },
+        {
+          "name": "GOOGLE_CSE_ID",
+          "value": "your-id"
+        },
+        {
+          "name": "FINNHUB_API_KEY",
+          "value": "your-key"
+        },
+        {
+          "name": "FMP_API_KEY",
+          "value": "your-key"
+        },
+        {
+          "name": "MAX_WORKERS",
+          "value": "2"
+        },
+        {
+          "name": "OPENAI_MODEL",
+          "value": "gpt-4o-mini"
+        },
+        {
+          "name": "MAX_PE_RATIO",
+          "value": "15.0"
+        },
+        {
+          "name": "MIN_MARKET_CAP",
+          "value": "1000000000"
+        },
+        {
+          "name": "AWS_DEFAULT_REGION",
+          "value": "eu-central-1"
+        },
+        {
+          "name": "EFS_MOUNT_PATH",
+          "value": "/mnt/efs"
+        },
+        {
+          "name": "RECOMMENDATIONS_DB_PATH",
+          "value": "/mnt/efs/data/db/recommendations.db"
+        },
+        {
+          "name": "DB_PATH",
+          "value": "/mnt/efs/data/db/stocks.duckdb"
+        },
+        {
+          "name": "USE_S3_SYNC",
+          "value": "false"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "efs-storage",
+          "containerPath": "/mnt/efs",
+          "readOnly": false
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/stock-analysis-app",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/_stcore/health').read()\" || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "efs-storage",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-0ef90891ac2118df2",
+        "rootDirectory": "/",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}
+

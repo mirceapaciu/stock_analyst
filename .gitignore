@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.env
+.env.*
+
+# Streamlit cache (but keep config.toml)
+.streamlit/*
+!.streamlit/config.toml
+
+# Local data artifacts and logs
+logs/*.log
+logs/*
+.coverage
+.python-version
+*workspace
+mpaciu_ae_cap_1_1.egg-info/
+
+# OS generated files
+Thumbs.db
+
+#generated DB
+data/db/
+data/stock_recommendation/
+
+# temporary files
+temp/
+
+# backup files
+*.bkp
+
+original_stock_recommendation_app/
+
+# ECS task definition with secrets
+deploy/ecs/task-definition.json

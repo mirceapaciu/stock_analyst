@@ -295,6 +295,7 @@ try:
                 with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
                     if db.remove_from_favorites(stock_id):
                         st.success(f"✅ Removed {ticker} from favorites.")
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(f"❌ Failed to remove {ticker}.")

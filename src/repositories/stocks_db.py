@@ -36,7 +36,8 @@ class StockRepository:
                 logger.info(f"Checking S3 for existing database: {os.path.basename(db_path)}")
                 s3.sync_database_from_s3(db_path)
         
-        self._ensure_tables_exist()
+        # FIXME: This is needed only at the start of the application
+        # self._ensure_tables_exist()
     
     def _ensure_tables_exist(self):
         """Ensure all required tables exist in the database."""

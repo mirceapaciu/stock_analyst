@@ -1068,38 +1068,18 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                 continue
             
             try:
-                if exchange and exchange != 'N/A':
-                    lookup_results = lookup_stock(ticker, exchange)
-                else:
-                    lookup_results = lookup_stock(ticker)
+                original_stock_name = rec.get('stock_name', 'N/A')
                 
-                if not lookup_results:
+                if exchange and exchange != 'N/A':
+                    stock_info = lookup_stock(ticker, exchange, original_stock_name)
+                else:
+                    stock_info = lookup_stock(ticker, stock_name=original_stock_name)
+                
+                if not stock_info:
                     rec['validation_status'] = 'not_found'
                     rec['validation_error'] = f'Ticker {ticker} not found in database or FMP API'
                     invalid_count += 1
                     continue
-                
-                original_stock_name = rec.get('stock_name', 'N/A')
-                
-                if len(lookup_results) == 1:
-                    stock_info = lookup_results[0]
-                else:
-                    from difflib import SequenceMatcher
-                    
-                    best_match = lookup_results[0]
-                    best_similarity = 0.0
-                    
-                    if original_stock_name and original_stock_name != 'N/A':
-                        for result in lookup_results:
-                            result_name = result.get('stock_name', '')
-                            similarity = SequenceMatcher(None, 
-                                                        original_stock_name.lower(), 
-                                                        result_name.lower()).ratio()
-                            if similarity > best_similarity:
-                                best_similarity = similarity
-                                best_match = result
-                    
-                    stock_info = best_match
                 
                 original_exchange = rec.get('exchange', 'N/A')
 

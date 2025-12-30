@@ -878,6 +878,34 @@ class RecommendationsDatabase:
         
         return recommended_stocks
     
+    def delete_stock_recommendation(self, recommendation_id: int) -> None:
+        """Delete a stock recommendation by its ID.
+        
+        Args:
+            recommendation_id: The ID of the recommendation to delete
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM input_stock_recommendation WHERE id = ?", (recommendation_id,))
+        
+        conn.commit()
+        conn.close()
+
+    def delete_recommended_stock(self, stock_id: int) -> None:
+        """Delete a recommended stock by its stock ID.
+        
+        Args:
+            stock_id: The stock ID of the recommended stock to delete
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM recommended_stock WHERE stock_id = ?", (stock_id,))
+        
+        conn.commit()
+        conn.close()
+
     def get_stocks_needing_market_data_refresh(self, force: bool = False) -> List[Dict]:
         """Get stocks that need market data refresh based on market_date.
         

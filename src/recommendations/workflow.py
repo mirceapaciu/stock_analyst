@@ -19,7 +19,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from config import MAX_RESULT_AGE_DAYS, GOOGLE_API_KEY, GOOGLE_CSE_ID, MAX_SEARCH_RESULTS, SEARCH_QUERIES, MAX_WORKERS
+from config import MAX_RESULT_AGE_DAYS, GOOGLE_API_KEY, GOOGLE_CSE_ID, MAX_SEARCH_RESULTS, SEARCH_QUERIES, MAX_WORKERS, MIN_MARKET_CAP
 from repositories.recommendations_db import RecommendationsDatabase
 from recommendations.prompts import get_extract_stocks_prompt, get_analyze_search_result_prompt, get_analyze_search_result_with_date_prompt
 
@@ -1035,8 +1035,22 @@ def load_webpage_to_db(db: RecommendationsDatabase, page: Dict) -> int:
 def validate_tickers_node(state: WorkflowState) -> WorkflowState:
     """Validate and enrich stock ticker information using lookup_stock()."""
     from services.recommendations import lookup_stock
+    from services.financial import get_or_create_stock_info
     
     db = RecommendationsDatabase()
+
+    def _normalize_market_cap(raw_value) -> Optional[float]:
+        if raw_value is None:
+            return None
+        try:
+            if isinstance(raw_value, str):
+                cleaned = raw_value.replace(',', '').strip()
+                if not cleaned:
+                    return None
+                return float(cleaned)
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return None
     
     validated_count = 0
     enriched_count = 0
@@ -1088,12 +1102,40 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                     stock_info = best_match
                 
                 original_exchange = rec.get('exchange', 'N/A')
+
+                ticker_upper = ticker.upper()
+                try:
+                    market_data = get_or_create_stock_info(ticker_upper)
+                except Exception as market_error:
+                    rec['validation_status'] = 'error'
+                    rec['validation_error'] = f"Market data lookup failed: {market_error}"
+                    invalid_count += 1
+                    logger.error(f"Market data lookup failed for {ticker_upper}: {market_error}")
+                    continue
+                
+                market_cap = _normalize_market_cap(market_data.get('marketCap') if market_data else None)
+
+                if market_cap is None:
+                    rec['validation_status'] = 'invalid'
+                    rec['validation_error'] = 'Missing marketCap data'
+                    invalid_count += 1
+                    logger.info(f"Skipping {ticker_upper}: missing marketCap")
+                    continue
+
+                if market_cap < MIN_MARKET_CAP:
+                    rec['validation_status'] = 'filtered_market_cap'
+                    rec['validation_error'] = f"marketCap {market_cap:.0f} below threshold {MIN_MARKET_CAP}"
+                    invalid_count += 1
+                    logger.info(f"Filtered {ticker_upper}: marketCap {market_cap} < {MIN_MARKET_CAP}")
+                    continue
+
                 
                 rec['exchange'] = stock_info['exchange']
                 rec['stock_name'] = stock_info['stock_name']
                 rec['mic'] = stock_info.get('mic')
                 rec['isin'] = stock_info.get('isin')
                 rec['stock_id'] = stock_info['id']
+                rec['marketCap'] = market_cap
                 rec['validation_status'] = 'validated'
                 
                 if original_exchange != stock_info['exchange'] or original_stock_name != stock_info['stock_name']:

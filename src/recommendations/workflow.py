@@ -938,28 +938,6 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
         "status": status_msg
     }
 
-def save_html_to_file(webpage_id: int, html_content: str) -> Optional[str]:
-    """Save HTML content to file using webpage_id and return the filepath."""
-    import os
-    
-    # Create directory structure: data/db/webpage/{webpage_id}/
-    webpage_dir = os.path.join('data', 'db', 'webpage', str(webpage_id))
-    os.makedirs(webpage_dir, exist_ok=True)
-    
-    # Create filename
-    filename = f"{webpage_id}.html"
-    filepath = os.path.join(webpage_dir, filename)
-    
-    try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        logger.info(f"Saved HTML to: {filepath}")
-        return filepath
-    except Exception as e:
-        logger.error(f"Failed to save HTML for webpage_id {webpage_id}: {e}")
-        return None
-
 def save_pdf_to_file(webpage_id: int, pdf_bytes: bytes) -> Optional[str]:
     """Save PDF content to file using webpage_id and return the filepath."""
     import os
@@ -980,6 +958,35 @@ def save_pdf_to_file(webpage_id: int, pdf_bytes: bytes) -> Optional[str]:
         return filepath
     except Exception as e:
         logger.error(f"Failed to save PDF for webpage_id {webpage_id}: {e}")
+        return None
+
+def save_metadata_to_file(webpage_id: int, url: str, webpage_title: str, webpage_date: str) -> Optional[str]:
+    """Save metadata to JSON file using webpage_id and return the filepath."""
+    import os
+    import json
+    
+    # Create directory structure: data/db/webpage/{webpage_id}/
+    webpage_dir = os.path.join('data', 'db', 'webpage', str(webpage_id))
+    os.makedirs(webpage_dir, exist_ok=True)
+    
+    # Create filename
+    filename = "metadata.json"
+    filepath = os.path.join(webpage_dir, filename)
+    
+    metadata = {
+        'url': url,
+        'webpage_title': webpage_title,
+        'webpage_date': webpage_date
+    }
+    
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Saved metadata to: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to save metadata for webpage_id {webpage_id}: {e}")
         return None
 
 def save_failed_recommendation_to_file(recommendation: dict, webpage_id: int, error: Exception) -> None:
@@ -1085,15 +1092,18 @@ def load_webpage_to_db(db: RecommendationsDatabase, page: Dict) -> int:
             page_text=page.get('page_text', '')
         )
 
-        # Save HTML content to file system using webpage_id
-        html_content = page.get('html_content')
-        if html_content:
-            save_html_to_file(webpage_id, html_content)
-        
         # Save PDF content to file system using webpage_id
         pdf_content = page.get('pdf_content')
         if pdf_content:
             save_pdf_to_file(webpage_id, pdf_content)
+        
+        # Save metadata to file system using webpage_id
+        save_metadata_to_file(
+            webpage_id=webpage_id,
+            url=page['url'],
+            webpage_title=page.get('webpage_title', ''),
+            webpage_date=page.get('webpage_date', str(date.today()))
+        )
 
         for rec in page.get('stock_recommendations', []):
             success, error_message = save_stock_recommendation_to_db(db, rec, webpage_id)

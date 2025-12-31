@@ -12,7 +12,7 @@ src_dir = os.path.join(project_root, 'src')
 sys.path.insert(0, src_dir)
 
 from repositories.recommendations_db import RecommendationsDatabase
-from recommendations.workflow import scrape_single_page, save_pdf_to_file, save_html_to_file
+from recommendations.workflow import scrape_single_page, save_pdf_to_file, save_metadata_to_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,23 +88,25 @@ def rescrape_webpage_to_pdf(webpage_id: int) -> bool:
         
         logger.info(f"Successfully scraped {url}")
         
-        # Save HTML if available
-        html_content = page_data.get('html_content')
-        if html_content:
-            html_path = save_html_to_file(webpage_id, html_content)
-            if html_path:
-                logger.info(f"HTML saved: {html_path}")
-        
         # Save PDF if available
         pdf_content = page_data.get('pdf_content')
         if pdf_content:
             pdf_path = save_pdf_to_file(webpage_id, pdf_content)
             if pdf_path:
                 logger.info(f"PDF saved: {pdf_path}")
-                return True
-            else:
-                logger.error("Failed to save PDF")
-                return False
+        
+        # Save metadata
+        metadata_path = save_metadata_to_file(
+            webpage_id=webpage_id,
+            url=page_data.get('url', url),
+            webpage_title=page_data.get('webpage_title', title),
+            webpage_date=page_data.get('webpage_date', date)
+        )
+        if metadata_path:
+            logger.info(f"Metadata saved: {metadata_path}")
+        
+        if pdf_content:
+            return True
         else:
             logger.warning("No PDF content generated (page may not have used browser rendering)")
             return False

@@ -545,10 +545,13 @@ try:
                         lambda x: (x[:MAX_RECOMMENDATION_LENGTH] + '...') if pd.notna(x) and len(str(x)) > MAX_RECOMMENDATION_LENGTH else (x if pd.notna(x) else "N/A")
                     )
                 
-                st.dataframe(
+                # Display table with row selection
+                rec_event = st.dataframe(
                     input_df_display,
                     width='stretch',
                     hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
                     column_config={
                         'Source URL': st.column_config.LinkColumn('Source URL'),
                         'Recommendation': st.column_config.TextColumn(
@@ -557,6 +560,32 @@ try:
                         )
                     }
                 )
+                
+                # Handle row selection for PDF viewing
+                selected_rec_rows = rec_event.selection.rows
+                if selected_rec_rows:
+                    selected_rec_idx = selected_rec_rows[0]
+                    selected_rec = input_df.iloc[selected_rec_idx]
+                    webpage_id = selected_rec.get('webpage_id')
+                    
+                    if pd.notna(webpage_id):
+                        from pathlib import Path
+                        import subprocess
+                        import os
+                        
+                        pdf_path = Path('data') / 'db' / 'webpage' / str(int(webpage_id)) / f"{int(webpage_id)}.pdf"
+                        
+                        if pdf_path.exists():
+                            if st.button("📄 View original page as PDF", type="primary", key=f"view_pdf_{webpage_id}"):
+                                # Open PDF with default system application
+                                abs_pdf_path = str(pdf_path.resolve())
+                                try:
+                                    os.startfile(abs_pdf_path)
+                                    st.success(f"✅ Opening PDF...")
+                                except Exception as e:
+                                    st.error(f"❌ Error opening PDF: {str(e)}")
+                                    st.info(f"📁 PDF location: {abs_pdf_path}")
+
             else:
                 st.dataframe(input_df, width='stretch', hide_index=True)
         else:

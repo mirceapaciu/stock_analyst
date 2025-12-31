@@ -1021,7 +1021,8 @@ class RecommendationsDatabase:
                 isr.price_growth_forecast_pct,
                 isr.pe,
                 isr.recommendation_text,
-                w.url AS webpage_url
+                w.url AS webpage_url,
+                w.id AS webpage_id
             FROM input_stock_recommendation isr
             JOIN ref_stock_rating rsr ON isr.rating_id = rsr.id
             LEFT JOIN webpage w ON isr.webpage_id = w.id

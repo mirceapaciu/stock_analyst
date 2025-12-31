@@ -505,7 +505,7 @@ try:
                 'target_price': 'Target Price',
                 'price_growth_forecast_pct': 'Growth %',
                 'pe': 'P/E',
-                'recommendation_text': 'Recommendation',
+                'recommendation_text': 'Recommendation Reason',
                 'webpage_url': 'Source URL'
             }
             
@@ -539,9 +539,10 @@ try:
                     )
                 
                 # Truncate recommendation text for better display
+                MAX_RECOMMENDATION_LENGTH = 200
                 if 'Recommendation' in input_df_display.columns:
                     input_df_display['Recommendation'] = input_df_display['Recommendation'].apply(
-                        lambda x: (x[:100] + '...') if pd.notna(x) and len(str(x)) > 100 else (x if pd.notna(x) else "N/A")
+                        lambda x: (x[:MAX_RECOMMENDATION_LENGTH] + '...') if pd.notna(x) and len(str(x)) > MAX_RECOMMENDATION_LENGTH else (x if pd.notna(x) else "N/A")
                     )
                 
                 st.dataframe(

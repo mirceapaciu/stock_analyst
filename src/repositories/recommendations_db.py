@@ -464,6 +464,33 @@ class RecommendationsDatabase:
         conn.close()
         return result is not None
 
+    def get_webpage_by_id(self, webpage_id: int) -> Dict:
+        """Get webpage details by ID."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, url, date, title, excerpt, last_seen_date, website_id, is_stock_recommendation
+            FROM webpage 
+            WHERE id = ?
+        """, (webpage_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'id': row[0],
+                'url': row[1],
+                'date': row[2],
+                'title': row[3],
+                'excerpt': row[4],
+                'last_seen_date': row[5],
+                'website_id': row[6],
+                'is_stock_recommendation': row[7]
+            }
+        return None
+
     def get_unusable_domains(self) -> List[str]:
         """Get list of domains marked as unusable (is_usable=0)."""
         conn = self._get_connection()

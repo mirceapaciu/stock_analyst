@@ -373,8 +373,8 @@ def extract_date_from_webpage(search_result: Dict, soup: BeautifulSoup) -> datet
     return page_date
 
 
-def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) -> tuple[str, BeautifulSoup]:
-    """Fetch webpage and return HTML content and parsed soup."""
+def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) -> tuple[str, BeautifulSoup, str, Optional[bytes]]:
+    """Fetch webpage and return (page_text, parsed_soup, original_html, pdf_bytes)."""
     if use_browser:
         from playwright.async_api import async_playwright
         
@@ -467,12 +467,21 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                     
                     await page.wait_for_timeout(2000)
                     html_content = await page.content()
-                    return html_content
+                    
+                    # Generate PDF
+                    pdf_bytes = await page.pdf(
+                        format='A4',
+                        print_background=True,
+                        margin={'top': '20px', 'right': '20px', 'bottom': '20px', 'left': '20px'}
+                    )
+                    
+                    return html_content, pdf_bytes
                 finally:
                     await browser.close()
         
         # Run async Playwright
-        html_content = asyncio.run(run_playwright_async())
+        html_content, pdf_bytes = asyncio.run(run_playwright_async())
+        original_html = html_content  # Store original before processing
         
         soup = BeautifulSoup(html_content, 'html.parser')
     else:
@@ -487,7 +496,9 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
         )
         response.raise_for_status()
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        html_content = response.content
+        original_html = html_content.decode('utf-8', errors='ignore')  # Store original before processing
+        soup = BeautifulSoup(html_content, 'html.parser')
     
     for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
         element.decompose()
@@ -532,7 +543,7 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
     else:
         page_text = page_text[:10000]
     
-    return page_text, soup
+    return page_text, soup, original_html, pdf_bytes if use_browser else None
 
 def validate_ticker_in_text(ticker: str, text: str) -> bool:
     """Verify that ticker symbol actually appears in the text."""
@@ -644,13 +655,13 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
     use_browser = True
     
     try:
-        page_text, soup = fetch_webpage_content(url, headers, use_browser=use_browser)
+        page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=use_browser)
     except requests.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 403:
             if not use_browser:
                 logger.warning(f"403 Forbidden for {url}, retrying with browser rendering")
                 try:
-                    page_text, soup = fetch_webpage_content(url, headers, use_browser=True)
+                    page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
                     logger.info(f"Browser rendering successful for {domain}, updating database")
                     db.upsert_website(domain, is_usable=1, requires_browser=1)
                 except Exception as browser_error:
@@ -695,11 +706,16 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             page_date=page_date
         )
 
+        # Use original HTML content (before script/style removal)
+        html_content = original_html
+
         result = {
             'url': url,
             'webpage_title': webpage_title,
             'webpage_date': webpage_date,
             'page_text': page_text,
+            'html_content': html_content,
+            'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': stock_recommendations
         }
         
@@ -711,11 +727,14 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM response for {url}: {e}")
+        html_content = original_html if 'original_html' in locals() else ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text,
+            'html_content': html_content,
+            'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': []
         }
         if 'expanded_from_url' in search_result:
@@ -723,11 +742,14 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         return result
     except Exception as e:
         logger.error(f"Scraping failed for {url}: {e}")
+        html_content = original_html if 'original_html' in locals() else ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text if 'page_text' in locals() else '',
+            'html_content': html_content,
+            'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': []
         }
         if 'expanded_from_url' in search_result:
@@ -916,6 +938,50 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
         "status": status_msg
     }
 
+def save_html_to_file(webpage_id: int, html_content: str) -> Optional[str]:
+    """Save HTML content to file using webpage_id and return the filepath."""
+    import os
+    
+    # Create directory structure: data/db/webpage/{webpage_id}/
+    webpage_dir = os.path.join('data', 'db', 'webpage', str(webpage_id))
+    os.makedirs(webpage_dir, exist_ok=True)
+    
+    # Create filename
+    filename = f"{webpage_id}.html"
+    filepath = os.path.join(webpage_dir, filename)
+    
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        logger.info(f"Saved HTML to: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to save HTML for webpage_id {webpage_id}: {e}")
+        return None
+
+def save_pdf_to_file(webpage_id: int, pdf_bytes: bytes) -> Optional[str]:
+    """Save PDF content to file using webpage_id and return the filepath."""
+    import os
+    
+    # Create directory structure: data/db/webpage/{webpage_id}/
+    webpage_dir = os.path.join('data', 'db', 'webpage', str(webpage_id))
+    os.makedirs(webpage_dir, exist_ok=True)
+    
+    # Create filename
+    filename = f"{webpage_id}.pdf"
+    filepath = os.path.join(webpage_dir, filename)
+    
+    try:
+        with open(filepath, 'wb') as f:
+            f.write(pdf_bytes)
+        
+        logger.info(f"Saved PDF to: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.error(f"Failed to save PDF for webpage_id {webpage_id}: {e}")
+        return None
+
 def save_failed_recommendation_to_file(recommendation: dict, webpage_id: int, error: Exception) -> None:
     """Save a failed recommendation to a JSON error file."""
     import os
@@ -1018,6 +1084,16 @@ def load_webpage_to_db(db: RecommendationsDatabase, page: Dict) -> int:
             is_stock_recommendation=1,
             page_text=page.get('page_text', '')
         )
+
+        # Save HTML content to file system using webpage_id
+        html_content = page.get('html_content')
+        if html_content:
+            save_html_to_file(webpage_id, html_content)
+        
+        # Save PDF content to file system using webpage_id
+        pdf_content = page.get('pdf_content')
+        if pdf_content:
+            save_pdf_to_file(webpage_id, pdf_content)
 
         for rec in page.get('stock_recommendations', []):
             success, error_message = save_stock_recommendation_to_db(db, rec, webpage_id)

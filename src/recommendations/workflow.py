@@ -541,7 +541,7 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
     else:
         page_text = page_text[:10000]
     
-    return page_text, soup, original_html, pdf_bytes if use_browser else None
+    return page_text, soup, html_content, pdf_bytes if use_browser else None
 
 def validate_ticker_in_text(ticker: str, text: str) -> bool:
     """Verify that ticker symbol actually appears in the text."""
@@ -709,7 +709,6 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             'webpage_title': webpage_title,
             'webpage_date': webpage_date,
             'page_text': page_text,
-            'html_content': html_content,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': stock_recommendations
         }
@@ -722,13 +721,11 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM response for {url}: {e}")
-        html_content = ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text,
-            'html_content': html_content,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': []
         }
@@ -737,13 +734,11 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         return result
     except Exception as e:
         logger.error(f"Scraping failed for {url}: {e}")
-        html_content = ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text if 'page_text' in locals() else '',
-            'html_content': html_content,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': []
         }

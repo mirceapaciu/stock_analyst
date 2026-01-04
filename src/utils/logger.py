@@ -50,6 +50,9 @@ def setup_logging():
 def save_workflow_state_to_json(final_state)->str:
     """Save workflow state to a JSON file in the logs directory.
     
+    Excludes pdf_content field to reduce file size.
+    This field is already saved to disk and doesn't need to be in state.
+    
     Args:
         final_state: The final state from the workflow execution
 
@@ -63,9 +66,18 @@ def save_workflow_state_to_json(final_state)->str:
         filename = f"workflow_state_{timestamp}.json"
         filepath = WORKFLOW_STATE_DIR / filename
         
+        # Deep copy state and remove large content fields
+        import copy
+        state_to_save = copy.deepcopy(final_state)
+        
+        # Remove pdf_content from scraped pages
+        if 'scraped_pages' in state_to_save:
+            for page in state_to_save['scraped_pages']:
+                page.pop('pdf_content', None)
+        
         # Save to JSON file
         with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(final_state, f, indent=2, ensure_ascii=False)
+            json.dump(state_to_save, f, indent=2, ensure_ascii=False)
         
         logger.info(f"Workflow state saved to: {filepath}")
         return str(filepath)

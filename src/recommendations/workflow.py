@@ -481,7 +481,6 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
         
         # Run async Playwright
         html_content, pdf_bytes = asyncio.run(run_playwright_async())
-        original_html = html_content  # Store original before processing
         
         soup = BeautifulSoup(html_content, 'html.parser')
     else:
@@ -497,7 +496,6 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
         response.raise_for_status()
         
         html_content = response.content
-        original_html = html_content.decode('utf-8', errors='ignore')  # Store original before processing
         soup = BeautifulSoup(html_content, 'html.parser')
     
     for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
@@ -706,9 +704,6 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             page_date=page_date
         )
 
-        # Use original HTML content (before script/style removal)
-        html_content = original_html
-
         result = {
             'url': url,
             'webpage_title': webpage_title,
@@ -727,7 +722,7 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM response for {url}: {e}")
-        html_content = original_html if 'original_html' in locals() else ''
+        html_content = ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),
@@ -742,7 +737,7 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         return result
     except Exception as e:
         logger.error(f"Scraping failed for {url}: {e}")
-        html_content = original_html if 'original_html' in locals() else ''
+        html_content = ''
         result = {
             'url': url,
             'webpage_title': search_result.get('title', ''),

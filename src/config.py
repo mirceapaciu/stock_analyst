@@ -37,22 +37,27 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # Custom Search Engine ID
 
 # Search settings
-MAX_SEARCH_RESULTS = 10
+MAX_SEARCH_RESULTS = 10 # Maximum results to fetch per query. Note Google CSE limits to 10 per request.
 MAX_RESULT_AGE_DAYS = 20  # Filter results older than this
+
+# Search query templates.
+# Use {year}, {month}, and {site} placeholders for dynamic values.
+# site will be replaced with reputable financial websites.
+# year and month will be replaced with the current year and month.
 SEARCH_QUERIES = [
-    "undervalued stocks {year} {month}",
-    "best value stocks {year} {month}",
+    "undervalued stocks site:{site}",
+    "best value stocks site:{site}",
     "stocks to buy site:{site}"
 ]
 
 REPUTABLE_SITES = [
-    "seekingalpha.com",
     "bloomberg.com",
     "reuters.com",    
     "morningstar.com",
     "finance.yahoo.com",
     "fool.com",
     "zacks.com",
+    "seekingalpha.com"
 ]
 
 # API Keys

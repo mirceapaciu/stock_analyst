@@ -149,7 +149,7 @@ def get_search_queries() -> List[str]:
     return queries
 
 def search_node(state: WorkflowState) -> WorkflowState:
-    """Search for undervalued stocks using Google Custom Search API."""
+    """Search for stock recommendations using Google Custom Search API."""
     update_progress_if_available(state, 30)
     try:
         if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
@@ -164,7 +164,7 @@ def search_node(state: WorkflowState) -> WorkflowState:
         all_results = []
         date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
         
-        for query in get_search_queries()[:1]:
+        for query in get_search_queries():
             try:
                 result = service.cse().list(
                     q=query,

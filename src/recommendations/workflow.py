@@ -144,7 +144,8 @@ def get_search_queries() -> List[str]:
     for q in SEARCH_QUERIES:
         for site in REPUTABLE_SITES:
             new_query = q.format(year=current_year, month=current_month, site=site)
-            queries.append(new_query)
+            if new_query not in queries:
+                queries.append(new_query)
 
     return queries
 
@@ -447,11 +448,11 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                 """)
                 
                 try:
-                    # Navigate and wait for network to be mostly idle
-                    await page.goto(url, wait_until='networkidle', timeout=45000)
+                    # Navigate and wait for DOM to be ready (more reliable than networkidle for ad-heavy sites)
+                    await page.goto(url, wait_until='domcontentloaded', timeout=30000)
                     
-                    # Additional wait for dynamic content
-                    await page.wait_for_timeout(5000)
+                    # Wait for dynamic content to load (longer wait since we're not using networkidle)
+                    await page.wait_for_timeout(8000)
                     
                     # Handle cookie consent banners
                     cookie_consent_selectors = [
@@ -479,6 +480,63 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                             continue
                     
                     await page.wait_for_timeout(2000)
+                    
+                    # Hide advertisement overlays and sticky elements before PDF generation
+                    await page.evaluate("""
+                        // Remove fixed/sticky position ads and overlays that cover content
+                        const selectorsToHide = [
+                            '[class*="ad-"][class*="overlay"]',
+                            '[class*="sticky-ad"]',
+                            '[id*="ad-overlay"]',
+                            '[class*="adhesion"]',
+                            '[class*="floating-ad"]',
+                            '[class*="notification-bar"]',
+                            '[class*="newsletter-popup"]',
+                            '[data-ad-type]',
+                            'iframe[src*="doubleclick"]',
+                            'iframe[src*="googlesyndication"]',
+                            '[class*="modal-backdrop"]',
+                            '[class*="overlay"]'
+                        ];
+                        
+                        selectorsToHide.forEach(selector => {
+                            try {
+                                document.querySelectorAll(selector).forEach(el => {
+                                    const style = window.getComputedStyle(el);
+                                    const position = style.position;
+                                    const zIndex = style.zIndex;
+                                    
+                                    // Hide if it's a fixed/sticky element with high z-index
+                                    if ((position === 'fixed' || position === 'sticky') && 
+                                        (zIndex === 'auto' || parseInt(zIndex) > 100)) {
+                                        el.style.display = 'none';
+                                    }
+                                });
+                            } catch (e) {
+                                // Ignore selector errors
+                            }
+                        });
+                        
+                        // Also hide any element with very high z-index (likely ads/overlays)
+                        document.querySelectorAll('*').forEach(el => {
+                            try {
+                                const style = window.getComputedStyle(el);
+                                const zIndex = parseInt(style.zIndex);
+                                const position = style.position;
+                                
+                                // Hide fixed elements with z-index > 1000
+                                if ((position === 'fixed' || position === 'sticky') && zIndex > 1000) {
+                                    el.style.display = 'none';
+                                }
+                            } catch (e) {
+                                // Ignore errors
+                            }
+                        });
+                    """)
+                    
+                    # Switch to print media mode (often hides ads automatically)
+                    await page.emulate_media(media='print')
+                    
                     html_content = await page.content()
                     
                     # Generate PDF

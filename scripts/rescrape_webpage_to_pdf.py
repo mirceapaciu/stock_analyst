@@ -44,7 +44,7 @@ def rescrape_webpage_to_pdf(webpage_id: int) -> bool:
         title = webpage.get('title', '')
         date = webpage.get('date', '')
         
-        logger.info(f"Rescaping webpage {webpage_id}: {url}")
+        logger.info(f"Rescraping webpage {webpage_id}: {url}")
         logger.info(f"Title: {title}")
         logger.info(f"Date: {date}")
         

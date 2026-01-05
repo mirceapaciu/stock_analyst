@@ -51,7 +51,7 @@ SEARCH_QUERIES = [
 ]
 
 REPUTABLE_SITES = [
-    "bloomberg.com",
+    # "bloomberg.com", requires sign-in
     "reuters.com",    
     "morningstar.com",
     "finance.yahoo.com",

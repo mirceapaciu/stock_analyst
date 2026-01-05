@@ -143,7 +143,7 @@ def get_search_queries() -> List[str]:
 
     for q in SEARCH_QUERIES:
         for site in REPUTABLE_SITES:
-            new_query = q.replace("{year}", str(current_year)).replace("{month}", str(current_month)).replace("{site}", site)
+            new_query = q.format(year=current_year, month=current_month, site=site)
             queries.append(new_query)
 
     return queries

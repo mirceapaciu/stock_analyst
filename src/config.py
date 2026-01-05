@@ -42,7 +42,7 @@ MAX_RESULT_AGE_DAYS = 20  # Filter results older than this
 SEARCH_QUERIES = [
     "undervalued stocks {year} {month}",
     "best value stocks {year} {month}",
-    "stocks to buy {site}"
+    "stocks to buy site:{site}"
 ]
 
 REPUTABLE_SITES = [

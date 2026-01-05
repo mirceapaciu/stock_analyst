@@ -70,10 +70,11 @@ def save_workflow_state_to_json(final_state)->str:
         import copy
         state_to_save = copy.deepcopy(final_state)
         
-        # Remove pdf_content from scraped pages
-        if 'scraped_pages' in state_to_save:
-            for page in state_to_save['scraped_pages']:
-                page.pop('pdf_content', None)
+        # Remove pdf_content from scraped pages and deduplicated pages
+        for key in ['scraped_pages', 'deduplicated_pages']:
+            if key in state_to_save:
+                for page in state_to_save[key]:
+                    page.pop('pdf_content', None)
         
         # Save to JSON file
         with open(filepath, 'w', encoding='utf-8') as f:

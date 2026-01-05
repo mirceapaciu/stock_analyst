@@ -40,9 +40,19 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # Custom Search Engine ID
 MAX_SEARCH_RESULTS = 10
 MAX_RESULT_AGE_DAYS = 20  # Filter results older than this
 SEARCH_QUERIES = [
-    "undervalued stocks 2025",
-    "cheap stocks 2025",
-    "best value stocks"
+    "undervalued stocks {year} {month}",
+    "best value stocks {year} {month}",
+    "stocks to buy {site}"
+]
+
+REPUTABLE_SITES = [
+    "seekingalpha.com",
+    "bloomberg.com",
+    "reuters.com",    
+    "morningstar.com",
+    "finance.yahoo.com",
+    "fool.com",
+    "zacks.com",
 ]
 
 # API Keys

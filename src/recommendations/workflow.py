@@ -19,7 +19,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from config import MAX_RESULT_AGE_DAYS, GOOGLE_API_KEY, GOOGLE_CSE_ID, MAX_SEARCH_RESULTS, SEARCH_QUERIES, MAX_WORKERS, MIN_MARKET_CAP
+from config import MAX_RESULT_AGE_DAYS, GOOGLE_API_KEY, GOOGLE_CSE_ID, MAX_SEARCH_RESULTS, SEARCH_QUERIES, MAX_WORKERS, MIN_MARKET_CAP, REPUTABLE_SITES
 from repositories.recommendations_db import RecommendationsDatabase
 from recommendations.prompts import get_extract_stocks_prompt, get_analyze_search_result_prompt, get_analyze_search_result_with_date_prompt
 
@@ -134,6 +134,19 @@ def update_progress_if_available(state: WorkflowState, progress: int):
         except Exception as e:
             logger.warning(f"Failed to update progress: {e}")
 
+def get_search_queries() -> List[str]:
+    """Generate search queries based on templates"""
+    queries: List[str] = []
+
+    current_year = date.today().year
+    current_month = date.today().month
+
+    for q in SEARCH_QUERIES:
+        for site in REPUTABLE_SITES:
+            new_query = q.replace("{year}", str(current_year)).replace("{month}", str(current_month)).replace("{site}", site)
+            queries.append(new_query)
+
+    return queries
 
 def search_node(state: WorkflowState) -> WorkflowState:
     """Search for undervalued stocks using Google Custom Search API."""
@@ -151,7 +164,7 @@ def search_node(state: WorkflowState) -> WorkflowState:
         all_results = []
         date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
         
-        for query in SEARCH_QUERIES[:1]:
+        for query in get_search_queries()[:1]:
             try:
                 result = service.cse().list(
                     q=query,

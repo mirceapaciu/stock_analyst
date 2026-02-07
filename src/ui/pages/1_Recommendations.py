@@ -506,7 +506,8 @@ try:
                 'price_growth_forecast_pct': 'Growth %',
                 'pe': 'P/E',
                 'recommendation_text': 'Recommendation Reason',
-                'webpage_url': 'Source URL'
+                'webpage_url': 'Source URL',
+                'webpage_id': 'Webpage ID'
             }
             
             # Select only columns that exist
@@ -516,6 +517,24 @@ try:
                 input_df_display = input_df[list(available_cols.keys())].copy()
                 input_df_display.columns = list(available_cols.values())
                 
+                # Add PDF link column (local file)
+                if 'webpage_id' in input_df.columns:
+                    def _build_pdf_link(webpage_id):
+                        if pd.isna(webpage_id):
+                            return None
+                        pdf_path = Path('data') / 'db' / 'webpage' / str(int(webpage_id)) / f"{int(webpage_id)}.pdf"
+                        if not pdf_path.exists():
+                            return None
+                        try:
+                            import base64
+                            with open(pdf_path, "rb") as pdf_file:
+                                encoded = base64.b64encode(pdf_file.read()).decode("utf-8")
+                            return f"data:application/pdf;base64,{encoded}"
+                        except Exception:
+                            return None
+
+                    input_df_display['PDF'] = input_df['webpage_id'].apply(_build_pdf_link)
+
                 # Format numeric columns
                 if 'Price' in input_df_display.columns:
                     input_df_display['Price'] = input_df_display['Price'].apply(
@@ -554,6 +573,8 @@ try:
                     selection_mode="single-row",
                     column_config={
                         'Source URL': st.column_config.LinkColumn('Source URL'),
+                        'Webpage ID': st.column_config.NumberColumn('Webpage ID', format="%d", width='small'),
+                        'PDF': st.column_config.LinkColumn('PDF', display_text='Open PDF'),
                         'Recommendation': st.column_config.TextColumn(
                             'Recommendation',
                             width='large'
@@ -576,7 +597,7 @@ try:
                         pdf_path = Path('data') / 'db' / 'webpage' / str(int(webpage_id)) / f"{int(webpage_id)}.pdf"
                         
                         if pdf_path.exists():
-                            if st.button("📄 View original page as PDF", type="primary", key=f"view_pdf_{webpage_id}"):
+                            if st.button(f"📄 View PDF (ID {int(webpage_id)})", type="primary", key=f"view_pdf_{webpage_id}"):
                                 # Open PDF with default system application
                                 abs_pdf_path = str(pdf_path.resolve())
                                 try:

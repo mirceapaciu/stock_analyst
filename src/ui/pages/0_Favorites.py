@@ -20,6 +20,20 @@ from repositories.recommendations_db import RecommendationsDatabase
 from services.recommendations import update_market_data_for_recommended_stocks
 from services.valuation import get_dcf_valuation
 from services.risk import get_risk_evaluation
+from fin_config import (
+    RISK_VOLATILITY_LOW,
+    RISK_VOLATILITY_HIGH,
+    RISK_DOWNSIDE_DEV_LOW,
+    RISK_DOWNSIDE_DEV_HIGH,
+    RISK_VAR_LOW,
+    RISK_VAR_HIGH,
+    RISK_CVAR_LOW,
+    RISK_CVAR_HIGH,
+    RISK_BETA_LOW,
+    RISK_BETA_HIGH,
+    RISK_MAX_DRAWDOWN_LOW,
+    RISK_MAX_DRAWDOWN_HIGH,
+)
 from config import RECOMMENDATIONS_DB_PATH
 
 
@@ -39,6 +53,55 @@ def _format_percent(value):
     if value is None:
         return "N/A"
     return f"{value:.1%}"
+
+
+def _score_from_range(value, low, high, higher_is_risk=True):
+    if value is None:
+        return None
+    if higher_is_risk:
+        if value <= low:
+            return 0.0
+        if value >= high:
+            return 100.0
+        return float((value - low) / (high - low) * 100)
+    if value >= high:
+        return 0.0
+    if value <= low:
+        return 100.0
+    return float((high - value) / (high - low) * 100)
+
+
+def _color_for_score(score):
+    if score is None:
+        return "#cfd8dc"
+    if score < 20:
+        return "#2e7d32"
+    if score < 40:
+        return "#66bb6a"
+    if score < 60:
+        return "#fdd835"
+    if score < 80:
+        return "#fb8c00"
+    return "#e53935"
+
+
+def _escape_attr(text):
+    if text is None:
+        return ""
+    return str(text).replace("&", "&amp;").replace("\"", "&quot;").replace("'", "&#39;")
+
+
+def _render_metric(label, value_text, help_text, score=None):
+    bg = _color_for_score(score)
+    title = _escape_attr(help_text)
+    st.markdown(
+        f"""
+        <div title="{title}" style="background:{bg};padding:0.35rem 0.5rem;border-radius:0.5rem;margin-bottom:0.4rem;color:#111;">
+            <strong>{label}:</strong> {value_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 st.set_page_config(page_title="Favorite Stocks", page_icon="⭐", layout="wide")
 
@@ -372,22 +435,26 @@ try:
             st.subheader(f"⚠️ Risk Evaluation for {ticker}")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric(
+                risk_score = risk_result.get("risk_score")
+                _render_metric(
                     "Risk Score",
-                    f"{risk_result.get('risk_score', 0):.0f}",
-                    help="Composite risk score from 0-100. Higher means riskier.",
+                    _format_score(risk_score),
+                    "Composite risk score from 0-100. Higher means riskier.",
+                    score=risk_score,
                 )
             with col2:
-                st.metric(
+                _render_metric(
                     "Risk Label",
                     risk_result.get('risk_label', 'N/A'),
-                    help="Bucketed label based on the composite score.",
+                    "Bucketed label based on the composite score.",
+                    score=risk_score,
                 )
             with col3:
-                st.metric(
+                _render_metric(
                     "Benchmark",
                     risk_result.get('benchmark', 'N/A'),
-                    help="Market index used to compute beta and relative risk.",
+                    "Market index used to compute beta and relative risk.",
+                    score=risk_score,
                 )
 
             sub_scores = risk_result.get("sub_scores") or {}
@@ -397,80 +464,106 @@ try:
             st.markdown("**Sub-scores**")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric(
+                market_score = sub_scores.get("market")
+                downside_score = sub_scores.get("downside")
+                _render_metric(
                     "Market",
-                    _format_score(sub_scores.get("market")),
-                    help="Market risk from beta and volatility. Higher means more sensitive to market moves.",
+                    _format_score(market_score),
+                    "Market risk from beta and volatility. Higher means more sensitive to market moves.",
+                    score=market_score,
                 )
-                st.metric(
+                _render_metric(
                     "Downside",
-                    _format_score(sub_scores.get("downside")),
-                    help="Downside risk from downside deviation, VaR, and CVaR. Higher means worse tail losses.",
+                    _format_score(downside_score),
+                    "Downside risk from downside deviation, VaR, and CVaR. Higher means worse tail losses.",
+                    score=downside_score,
                 )
             with col2:
-                st.metric(
+                drawdown_score = sub_scores.get("drawdown")
+                leverage_score = sub_scores.get("leverage")
+                _render_metric(
                     "Drawdown",
-                    _format_score(sub_scores.get("drawdown")),
-                    help="Severity and duration of peak-to-trough declines. Higher means deeper/longer drawdowns.",
+                    _format_score(drawdown_score),
+                    "Severity and duration of peak-to-trough declines. Higher means deeper/longer drawdowns.",
+                    score=drawdown_score,
                 )
-                st.metric(
+                _render_metric(
                     "Leverage",
-                    _format_score(sub_scores.get("leverage")),
-                    help="Balance-sheet leverage and liquidity indicators. Higher means more financial risk.",
+                    _format_score(leverage_score),
+                    "Balance-sheet leverage and liquidity indicators. Higher means more financial risk.",
+                    score=leverage_score,
                 )
             with col3:
-                st.metric(
+                stability_score = sub_scores.get("stability")
+                valuation_score = sub_scores.get("valuation")
+                _render_metric(
                     "Stability",
-                    _format_score(sub_scores.get("stability")),
-                    help="Volatility of cash flow, revenue, and margins. Higher means less stable fundamentals.",
+                    _format_score(stability_score),
+                    "Volatility of cash flow, revenue, and margins. Higher means less stable fundamentals.",
+                    score=stability_score,
                 )
-                st.metric(
+                _render_metric(
                     "Valuation",
-                    _format_score(sub_scores.get("valuation")),
-                    help="Sensitivity of DCF value to discount rate and terminal growth. Higher means more fragile valuation.",
+                    _format_score(valuation_score),
+                    "Sensitivity of DCF value to discount rate and terminal growth. Higher means more fragile valuation.",
+                    score=valuation_score,
                 )
 
             st.markdown("**Key metrics**")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric(
+                volatility = metrics.get("volatility")
+                downside_dev = metrics.get("downside_deviation")
+                _render_metric(
                     "Volatility",
-                    _format_decimal(metrics.get("volatility")),
-                    help="Annualized standard deviation of daily returns. Higher means larger price swings.",
+                    _format_decimal(volatility),
+                    "Annualized standard deviation of daily returns. Higher means larger price swings.",
+                    score=_score_from_range(volatility, RISK_VOLATILITY_LOW, RISK_VOLATILITY_HIGH),
                 )
-                st.metric(
+                _render_metric(
                     "Downside Deviation",
-                    _format_decimal(metrics.get("downside_deviation")),
-                    help="Annualized volatility of negative returns only. Higher means worse downside swings.",
+                    _format_decimal(downside_dev),
+                    "Annualized volatility of negative returns only. Higher means worse downside swings.",
+                    score=_score_from_range(downside_dev, RISK_DOWNSIDE_DEV_LOW, RISK_DOWNSIDE_DEV_HIGH),
                 )
             with col2:
-                st.metric(
+                var_95 = metrics.get("var_95")
+                cvar_95 = metrics.get("cvar_95")
+                _render_metric(
                     "VaR (95%)",
-                    _format_decimal(metrics.get("var_95")),
-                    help="Estimated one-day loss threshold at 95% confidence. Higher means larger typical worst-day loss.",
+                    _format_decimal(var_95),
+                    "Estimated one-day loss threshold at 95% confidence. Higher means larger typical worst-day loss.",
+                    score=_score_from_range(var_95, RISK_VAR_LOW, RISK_VAR_HIGH),
                 )
-                st.metric(
+                _render_metric(
                     "CVaR (95%)",
-                    _format_decimal(metrics.get("cvar_95")),
-                    help="Average loss beyond the 95% VaR threshold. Higher means fatter tail losses.",
+                    _format_decimal(cvar_95),
+                    "Average loss beyond the 95% VaR threshold. Higher means fatter tail losses.",
+                    score=_score_from_range(cvar_95, RISK_CVAR_LOW, RISK_CVAR_HIGH),
                 )
             with col3:
-                st.metric(
+                beta = metrics.get("beta")
+                max_drawdown = metrics.get("max_drawdown")
+                _render_metric(
                     "Beta",
-                    _format_decimal(metrics.get("beta")),
-                    help="Sensitivity of returns to the benchmark index. Above 1 means more volatile than the market.",
+                    _format_decimal(beta),
+                    "Sensitivity of returns to the benchmark index. Above 1 means more volatile than the market.",
+                    score=_score_from_range(beta, RISK_BETA_LOW, RISK_BETA_HIGH),
                 )
-                st.metric(
+                _render_metric(
                     "Max Drawdown",
-                    _format_percent(metrics.get("max_drawdown")),
-                    help="Largest peak-to-trough decline over the lookback window. Higher means bigger historical losses.",
+                    _format_percent(max_drawdown),
+                    "Largest peak-to-trough decline over the lookback window. Higher means bigger historical losses.",
+                    score=_score_from_range(max_drawdown, RISK_MAX_DRAWDOWN_LOW, RISK_MAX_DRAWDOWN_HIGH),
                 )
 
             if valuation and valuation.get("percent_below_market") is not None:
-                st.metric(
+                valuation_pct = valuation["percent_below_market"] * 100
+                _render_metric(
                     "Valuation Sensitivity",
                     f"{valuation['percent_below_market']:.0%}",
-                    help="Share of DCF grid scenarios below the current market price. Higher means more downside in plausible scenarios.",
+                    "Share of DCF grid scenarios below the current market price. Higher means more downside in plausible scenarios.",
+                    score=valuation_pct,
                 )
 
         # Notes section for the selected stock

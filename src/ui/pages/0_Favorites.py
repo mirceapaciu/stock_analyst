@@ -400,34 +400,34 @@ try:
                 st.metric(
                     "Market",
                     _format_score(sub_scores.get("market")),
-                    help="Market risk from beta and volatility.",
+                    help="Market risk from beta and volatility. Higher means more sensitive to market moves.",
                 )
                 st.metric(
                     "Downside",
                     _format_score(sub_scores.get("downside")),
-                    help="Downside risk from downside deviation, VaR, and CVaR.",
+                    help="Downside risk from downside deviation, VaR, and CVaR. Higher means worse tail losses.",
                 )
             with col2:
                 st.metric(
                     "Drawdown",
                     _format_score(sub_scores.get("drawdown")),
-                    help="Severity and duration of peak-to-trough declines.",
+                    help="Severity and duration of peak-to-trough declines. Higher means deeper/longer drawdowns.",
                 )
                 st.metric(
                     "Leverage",
                     _format_score(sub_scores.get("leverage")),
-                    help="Balance-sheet leverage and liquidity indicators.",
+                    help="Balance-sheet leverage and liquidity indicators. Higher means more financial risk.",
                 )
             with col3:
                 st.metric(
                     "Stability",
                     _format_score(sub_scores.get("stability")),
-                    help="Volatility of cash flow, revenue, and margins.",
+                    help="Volatility of cash flow, revenue, and margins. Higher means less stable fundamentals.",
                 )
                 st.metric(
                     "Valuation",
                     _format_score(sub_scores.get("valuation")),
-                    help="Sensitivity of DCF value to discount rate and terminal growth.",
+                    help="Sensitivity of DCF value to discount rate and terminal growth. Higher means more fragile valuation.",
                 )
 
             st.markdown("**Key metrics**")
@@ -436,41 +436,41 @@ try:
                 st.metric(
                     "Volatility",
                     _format_decimal(metrics.get("volatility")),
-                    help="Annualized standard deviation of daily returns.",
+                    help="Annualized standard deviation of daily returns. Higher means larger price swings.",
                 )
                 st.metric(
                     "Downside Deviation",
                     _format_decimal(metrics.get("downside_deviation")),
-                    help="Annualized volatility of negative returns only.",
+                    help="Annualized volatility of negative returns only. Higher means worse downside swings.",
                 )
             with col2:
                 st.metric(
                     "VaR (95%)",
                     _format_decimal(metrics.get("var_95")),
-                    help="Estimated one-day loss threshold at 95% confidence.",
+                    help="Estimated one-day loss threshold at 95% confidence. Higher means larger typical worst-day loss.",
                 )
                 st.metric(
                     "CVaR (95%)",
                     _format_decimal(metrics.get("cvar_95")),
-                    help="Average loss beyond the 95% VaR threshold.",
+                    help="Average loss beyond the 95% VaR threshold. Higher means fatter tail losses.",
                 )
             with col3:
                 st.metric(
                     "Beta",
                     _format_decimal(metrics.get("beta")),
-                    help="Sensitivity of returns to the benchmark index.",
+                    help="Sensitivity of returns to the benchmark index. Above 1 means more volatile than the market.",
                 )
                 st.metric(
                     "Max Drawdown",
                     _format_percent(metrics.get("max_drawdown")),
-                    help="Largest peak-to-trough decline over the lookback window.",
+                    help="Largest peak-to-trough decline over the lookback window. Higher means bigger historical losses.",
                 )
 
             if valuation and valuation.get("percent_below_market") is not None:
                 st.metric(
                     "Valuation Sensitivity",
                     f"{valuation['percent_below_market']:.0%}",
-                    help="Share of DCF grid scenarios below the current market price.",
+                    help="Share of DCF grid scenarios below the current market price. Higher means more downside in plausible scenarios.",
                 )
 
         # Notes section for the selected stock

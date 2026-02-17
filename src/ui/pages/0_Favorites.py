@@ -19,6 +19,7 @@ if not check_password():
 from repositories.recommendations_db import RecommendationsDatabase
 from services.recommendations import update_market_data_for_recommended_stocks
 from services.valuation import get_dcf_valuation
+from services.risk import get_risk_evaluation
 from config import RECOMMENDATIONS_DB_PATH
 
 st.set_page_config(page_title="Favorite Stocks", page_icon="⭐", layout="wide")
@@ -263,7 +264,7 @@ try:
         
         # Display selected stock info and action buttons
         st.divider()
-        col1, col2, col3 = st.columns([3, 1, 1])
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
         with col1:
             st.info(f"📌 Selected: **{ticker}** - {stock_name}")
         
@@ -299,6 +300,16 @@ try:
                         st.rerun()
                     else:
                         st.error(f"❌ Failed to remove {ticker}.")
+
+        with col4:
+            if st.button("⚠️ Evaluate Risk", type="secondary", width='stretch'):
+                with st.spinner(f"Evaluating risk for {ticker}..."):
+                    try:
+                        risk_result = get_risk_evaluation(ticker)
+                        st.session_state[f"risk_result_{ticker}"] = risk_result
+                        st.success("✅ Risk evaluation complete")
+                    except Exception as risk_error:
+                        st.error(f"❌ Risk evaluation failed: {risk_error}")
         
         # Display additional details
         st.divider()
@@ -334,6 +345,36 @@ try:
                 st.metric("Gain/Loss", f"{gain_loss:+.2f}%", delta=f"{gain_loss:+.2f}%", delta_color=delta_color)
             else:
                 st.metric("Gain/Loss", "N/A")
+
+        # Risk evaluation section
+        risk_state_key = f"risk_result_{ticker}"
+        if risk_state_key in st.session_state:
+            risk_result = st.session_state[risk_state_key]
+            st.divider()
+            st.subheader(f"⚠️ Risk Evaluation for {ticker}")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Risk Score", f"{risk_result.get('risk_score', 0):.0f}")
+            with col2:
+                st.metric("Risk Label", risk_result.get('risk_label', 'N/A'))
+            with col3:
+                st.metric("Benchmark", risk_result.get('benchmark', 'N/A'))
+
+            sub_scores = risk_result.get("sub_scores") or {}
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Market": sub_scores.get("market"),
+                        "Downside": sub_scores.get("downside"),
+                        "Drawdown": sub_scores.get("drawdown"),
+                        "Leverage": sub_scores.get("leverage"),
+                        "Stability": sub_scores.get("stability"),
+                        "Valuation": sub_scores.get("valuation"),
+                    }
+                ]),
+                width='stretch',
+                hide_index=True,
+            )
 
         # Notes section for the selected stock
         st.divider()

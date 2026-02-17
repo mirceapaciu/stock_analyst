@@ -240,6 +240,39 @@ def create_exchange_rate_table(conn: duckdb.DuckDBPyConnection, drop_if_exists: 
     conn.commit()
 
 
+def create_risk_evaluation_table(conn: duckdb.DuckDBPyConnection, drop_if_exists: bool = False):
+    """Create risk evaluation results table."""
+    cursor = conn.cursor()
+
+    if drop_if_exists:
+        cursor.execute("DROP TABLE IF EXISTS risk_evaluation CASCADE")
+        cursor.execute("DROP SEQUENCE IF EXISTS risk_evaluation_id_seq")
+
+    cursor.execute("""
+    CREATE SEQUENCE IF NOT EXISTS risk_evaluation_id_seq START 1
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS risk_evaluation (
+        id INTEGER PRIMARY KEY DEFAULT nextval('risk_evaluation_id_seq'),
+        stock_id INTEGER NOT NULL,
+        evaluation_date DATE DEFAULT CURRENT_DATE,
+        benchmark_symbol TEXT,
+        lookback_years INTEGER,
+        risk_score DOUBLE,
+        risk_label TEXT,
+        sub_scores TEXT,
+        metrics TEXT,
+        valuation_sensitivity TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (stock_id) REFERENCES stock(id),
+        UNIQUE(stock_id, evaluation_date, benchmark_symbol, lookback_years)
+    )
+    """)
+
+    conn.commit()
+
+
 def create_stocks_db(db_path=DB_PATH, drop_if_exists: bool = False):
     """
     Creates all DuckDB tables for stock fundamental data.
@@ -259,6 +292,7 @@ def create_stocks_db(db_path=DB_PATH, drop_if_exists: bool = False):
         create_price_history_table(conn, drop_if_exists)
         create_dcf_valuation_table(conn, drop_if_exists)
         create_exchange_rate_table(conn, drop_if_exists)
+        create_risk_evaluation_table(conn, drop_if_exists)
         
         logger.info("All tables created successfully!")
     finally:

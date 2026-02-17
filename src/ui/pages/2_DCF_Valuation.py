@@ -2,6 +2,7 @@
 
 import streamlit as st
 import sys
+import pandas as pd
 from pathlib import Path
 
 # Add src directory to Python path
@@ -16,6 +17,7 @@ if not check_password():
     st.stop()  # Stop execution if not authenticated
 
 from services.valuation import get_dcf_valuation, print_dcf_analysis, get_recomendation_from_upside_potential
+from services.risk import get_risk_evaluation
 from services.financial import get_or_create_stock_info
 from services.currency import get_financial_currency
 from fin_config import DEFAULT_TERMINAL_GROWTH_RATE, MIN_WACC, MAX_WACC, DEFAULT_WACC
@@ -157,6 +159,63 @@ if submit:
                 
                 st.divider()
                 
+                # Risk evaluation
+                with st.expander("⚠️ Risk Evaluation", expanded=False):
+                    try:
+                        risk_result = get_risk_evaluation(ticker)
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Risk Score", f"{risk_result.get('risk_score', 0):.0f}")
+                        with col2:
+                            st.metric("Risk Label", risk_result.get('risk_label', 'N/A'))
+                        with col3:
+                            st.metric("Benchmark", risk_result.get('benchmark', 'N/A'))
+
+                        sub_scores = risk_result.get("sub_scores") or {}
+                        metrics = risk_result.get("metrics") or {}
+                        valuation = risk_result.get("valuation_sensitivity") or {}
+
+                        st.markdown("**Sub-scores**")
+                        st.dataframe(
+                            pd.DataFrame([
+                                {
+                                    "Market": sub_scores.get("market"),
+                                    "Downside": sub_scores.get("downside"),
+                                    "Drawdown": sub_scores.get("drawdown"),
+                                    "Leverage": sub_scores.get("leverage"),
+                                    "Stability": sub_scores.get("stability"),
+                                    "Valuation": sub_scores.get("valuation"),
+                                }
+                            ]),
+                            width='stretch',
+                            hide_index=True,
+                        )
+
+                        st.markdown("**Key metrics**")
+                        st.dataframe(
+                            pd.DataFrame([
+                                {
+                                    "Volatility": metrics.get("volatility"),
+                                    "Downside Deviation": metrics.get("downside_deviation"),
+                                    "VaR (95%)": metrics.get("var_95"),
+                                    "CVaR (95%)": metrics.get("cvar_95"),
+                                    "Beta": metrics.get("beta"),
+                                    "Max Drawdown": metrics.get("max_drawdown"),
+                                }
+                            ]),
+                            width='stretch',
+                            hide_index=True,
+                        )
+
+                        if valuation and valuation.get("percent_below_market") is not None:
+                            st.markdown(
+                                f"**Valuation sensitivity:** {valuation['percent_below_market']:.0%} of grid below market price"
+                            )
+                    except Exception as risk_error:
+                        st.warning(f"Risk evaluation unavailable: {risk_error}")
+
+                st.divider()
+
                 # Detailed analysis
                 with st.expander("📊 Detailed Analysis", expanded=True):
                     col1, col2 = st.columns(2)

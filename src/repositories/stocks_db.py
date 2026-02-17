@@ -50,12 +50,12 @@ class StockRepository:
                 SELECT COUNT(*) FROM information_schema.tables 
                 WHERE table_schema = 'main' 
                 AND table_name IN ('stock', 'fin_statement_item', 'stock_fin_statement', 
-                                  'dcf_valuation', 'exchange_rate')
+                                  'dcf_valuation', 'exchange_rate', 'risk_evaluation')
             """)
             result = cursor.fetchone()
             
             # Only create tables if they don't all exist
-            if result[0] < 5:  # We expect 5 tables
+            if result[0] < 6:  # We expect 6 tables
                 from pathlib import Path
                 
                 # Ensure we're using an absolute path
@@ -409,6 +409,10 @@ class StockRepository:
             valuation_result: Dictionary containing valuation results from do_dcf_valuation
         """
         import json
+
+        sub_scores_json = json.dumps(risk_result.get('sub_scores'))
+        metrics_json = json.dumps(risk_result.get('metrics'))
+        valuation_json = json.dumps(risk_result.get('valuation_sensitivity'))
         
         try:
             conn = self._get_connection()
@@ -491,6 +495,122 @@ class StockRepository:
         except Exception as e:
             logger.error(f"Database error saving DCF valuation: {e}")
             raise e
+
+    def save_risk_evaluation(self, stock_id: int, risk_result: dict) -> None:
+        """
+        Save risk evaluation results to database.
+
+        Args:
+            stock_id: Stock ID from the stock table
+            risk_result: Dictionary containing risk evaluation results
+        """
+        import json
+
+        sub_scores_json = json.dumps(risk_result.get('sub_scores'))
+        metrics_json = json.dumps(risk_result.get('metrics'))
+        valuation_json = json.dumps(risk_result.get('valuation_sensitivity'))
+
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            self._insert_risk_evaluation(cursor, stock_id, risk_result, sub_scores_json, metrics_json, valuation_json)
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Database error saving risk evaluation: {e}")
+            try:
+                # FIXME: This can be removed once the table is created and we are sure it exists. This is just a fallback to create the table if it doesn't exist yet.
+                from repositories.create_stocks_db import create_risk_evaluation_table
+                create_risk_evaluation_table(conn, drop_if_exists=False)
+                cursor = conn.cursor()
+                self._insert_risk_evaluation(cursor, stock_id, risk_result, sub_scores_json, metrics_json, valuation_json)
+                conn.commit()
+            except Exception:
+                raise e
+
+    def _insert_risk_evaluation(
+        self,
+        cursor,
+        stock_id: int,
+        risk_result: dict,
+        sub_scores_json: str,
+        metrics_json: str,
+        valuation_json: str,
+    ) -> None:
+        cursor.execute("""
+        INSERT INTO risk_evaluation (
+            stock_id,
+            benchmark_symbol,
+            lookback_years,
+            risk_score,
+            risk_label,
+            sub_scores,
+            metrics,
+            valuation_sensitivity
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8
+        )
+        ON CONFLICT (stock_id, evaluation_date, benchmark_symbol, lookback_years)
+        DO UPDATE SET
+            risk_score = $4,
+            risk_label = $5,
+            sub_scores = $6,
+            metrics = $7,
+            valuation_sensitivity = $8
+        """, (
+            stock_id,
+            risk_result.get('benchmark'),
+            risk_result.get('lookback_years'),
+            risk_result.get('risk_score'),
+            risk_result.get('risk_label'),
+            sub_scores_json,
+            metrics_json,
+            valuation_json,
+        ))
+
+    def get_latest_risk_evaluation(self, stock_id: int) -> Optional[dict]:
+        """Fetch the latest risk evaluation for a stock."""
+        import json
+
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT
+                evaluation_date,
+                benchmark_symbol,
+                lookback_years,
+                risk_score,
+                risk_label,
+                sub_scores,
+                metrics,
+                valuation_sensitivity
+            FROM risk_evaluation
+            WHERE stock_id = $1
+            ORDER BY evaluation_date DESC
+            LIMIT 1
+            """, (stock_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            return {
+                "evaluation_date": row[0],
+                "benchmark": row[1],
+                "lookback_years": row[2],
+                "risk_score": row[3],
+                "risk_label": row[4],
+                "sub_scores": json.loads(row[5]) if row[5] else None,
+                "metrics": json.loads(row[6]) if row[6] else None,
+                "valuation_sensitivity": json.loads(row[7]) if row[7] else None,
+            }
+        except Exception as e:
+            logger.error(f"Database error reading risk evaluation: {e}")
+            try:
+                from repositories.create_stocks_db import create_risk_evaluation_table
+                create_risk_evaluation_table(conn, drop_if_exists=False)
+            except Exception:
+                pass
+            return None
 
     def get_exchange_rate(
         self, 

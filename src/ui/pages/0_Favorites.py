@@ -22,6 +22,24 @@ from services.valuation import get_dcf_valuation
 from services.risk import get_risk_evaluation
 from config import RECOMMENDATIONS_DB_PATH
 
+
+def _format_score(value):
+    if value is None:
+        return "N/A"
+    return f"{value:.0f}"
+
+
+def _format_decimal(value):
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
+def _format_percent(value):
+    if value is None:
+        return "N/A"
+    return f"{value:.1%}"
+
 st.set_page_config(page_title="Favorite Stocks", page_icon="⭐", layout="wide")
 
 st.title("⭐ Favorite Stocks")
@@ -354,27 +372,106 @@ try:
             st.subheader(f"⚠️ Risk Evaluation for {ticker}")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Risk Score", f"{risk_result.get('risk_score', 0):.0f}")
+                st.metric(
+                    "Risk Score",
+                    f"{risk_result.get('risk_score', 0):.0f}",
+                    help="Composite risk score from 0-100. Higher means riskier.",
+                )
             with col2:
-                st.metric("Risk Label", risk_result.get('risk_label', 'N/A'))
+                st.metric(
+                    "Risk Label",
+                    risk_result.get('risk_label', 'N/A'),
+                    help="Bucketed label based on the composite score.",
+                )
             with col3:
-                st.metric("Benchmark", risk_result.get('benchmark', 'N/A'))
+                st.metric(
+                    "Benchmark",
+                    risk_result.get('benchmark', 'N/A'),
+                    help="Market index used to compute beta and relative risk.",
+                )
 
             sub_scores = risk_result.get("sub_scores") or {}
-            st.dataframe(
-                pd.DataFrame([
-                    {
-                        "Market": sub_scores.get("market"),
-                        "Downside": sub_scores.get("downside"),
-                        "Drawdown": sub_scores.get("drawdown"),
-                        "Leverage": sub_scores.get("leverage"),
-                        "Stability": sub_scores.get("stability"),
-                        "Valuation": sub_scores.get("valuation"),
-                    }
-                ]),
-                width='stretch',
-                hide_index=True,
-            )
+            metrics = risk_result.get("metrics") or {}
+            valuation = risk_result.get("valuation_sensitivity") or {}
+
+            st.markdown("**Sub-scores**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(
+                    "Market",
+                    _format_score(sub_scores.get("market")),
+                    help="Market risk from beta and volatility.",
+                )
+                st.metric(
+                    "Downside",
+                    _format_score(sub_scores.get("downside")),
+                    help="Downside risk from downside deviation, VaR, and CVaR.",
+                )
+            with col2:
+                st.metric(
+                    "Drawdown",
+                    _format_score(sub_scores.get("drawdown")),
+                    help="Severity and duration of peak-to-trough declines.",
+                )
+                st.metric(
+                    "Leverage",
+                    _format_score(sub_scores.get("leverage")),
+                    help="Balance-sheet leverage and liquidity indicators.",
+                )
+            with col3:
+                st.metric(
+                    "Stability",
+                    _format_score(sub_scores.get("stability")),
+                    help="Volatility of cash flow, revenue, and margins.",
+                )
+                st.metric(
+                    "Valuation",
+                    _format_score(sub_scores.get("valuation")),
+                    help="Sensitivity of DCF value to discount rate and terminal growth.",
+                )
+
+            st.markdown("**Key metrics**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(
+                    "Volatility",
+                    _format_decimal(metrics.get("volatility")),
+                    help="Annualized standard deviation of daily returns.",
+                )
+                st.metric(
+                    "Downside Deviation",
+                    _format_decimal(metrics.get("downside_deviation")),
+                    help="Annualized volatility of negative returns only.",
+                )
+            with col2:
+                st.metric(
+                    "VaR (95%)",
+                    _format_decimal(metrics.get("var_95")),
+                    help="Estimated one-day loss threshold at 95% confidence.",
+                )
+                st.metric(
+                    "CVaR (95%)",
+                    _format_decimal(metrics.get("cvar_95")),
+                    help="Average loss beyond the 95% VaR threshold.",
+                )
+            with col3:
+                st.metric(
+                    "Beta",
+                    _format_decimal(metrics.get("beta")),
+                    help="Sensitivity of returns to the benchmark index.",
+                )
+                st.metric(
+                    "Max Drawdown",
+                    _format_percent(metrics.get("max_drawdown")),
+                    help="Largest peak-to-trough decline over the lookback window.",
+                )
+
+            if valuation and valuation.get("percent_below_market") is not None:
+                st.metric(
+                    "Valuation Sensitivity",
+                    f"{valuation['percent_below_market']:.0%}",
+                    help="Share of DCF grid scenarios below the current market price.",
+                )
 
         # Notes section for the selected stock
         st.divider()

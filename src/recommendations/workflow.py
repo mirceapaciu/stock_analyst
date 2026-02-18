@@ -1198,6 +1198,26 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
             return float(raw_value)
         except (TypeError, ValueError):
             return None
+
+    def _has_valuation_value(raw_value) -> bool:
+        if raw_value is None:
+            return False
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip()
+            if not normalized:
+                return False
+            try:
+                float(normalized.replace(',', ''))
+                return True
+            except ValueError:
+                return False
+        if isinstance(raw_value, (int, float)):
+            return True
+        try:
+            float(raw_value)
+            return True
+        except (TypeError, ValueError):
+            return False
     
     validated_count = 0
     enriched_count = 0
@@ -1207,6 +1227,15 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
         for rec in page.get('stock_recommendations', []):
             ticker = rec.get('ticker', '').strip()
             exchange = rec.get('exchange', '').strip()
+
+            has_fair_price = _has_valuation_value(rec.get('fair_price'))
+            has_target_price = _has_valuation_value(rec.get('target_price'))
+            if not has_fair_price and not has_target_price:
+                rec['validation_status'] = 'filtered_missing_price'
+                rec['validation_error'] = 'Missing both fair_price and target_price'
+                invalid_count += 1
+                logger.info(f"Filtered {ticker or 'unknown'}: missing both fair_price and target_price")
+                continue
             
             if not ticker or ticker == 'N/A':
                 rec['validation_status'] = 'invalid'

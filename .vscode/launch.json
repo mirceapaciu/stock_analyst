@@ -54,6 +54,18 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
+        },  
+        {
+            "name": "Debug: update_recommended_stock.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/update_recommended_stock.py",
+            "args": ["--stock-id", "481"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
         },        
         {
             "name": "Debug: test_replay_from_dumped_state",

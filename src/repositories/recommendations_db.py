@@ -812,6 +812,8 @@ class RecommendationsDatabase:
         for row in aggregated_data:
             (stock_id, avg_rating, last_analysis_date, avg_fair_price, 
              avg_target_price, avg_price_growth_forecast_pct, first_entry_date) = row
+
+            effective_fair_price = avg_fair_price if avg_fair_price is not None else avg_target_price
             
             # Check if record exists in recommended_stock
             cursor.execute(
@@ -835,7 +837,7 @@ class RecommendationsDatabase:
                 """, (
                     avg_rating,
                     last_analysis_date,
-                    avg_fair_price,
+                    effective_fair_price,
                     avg_target_price,
                     avg_price_growth_forecast_pct,
                     stock_id
@@ -852,7 +854,7 @@ class RecommendationsDatabase:
                     stock_id,
                     avg_rating,
                     last_analysis_date,
-                    avg_fair_price,
+                    effective_fair_price,
                     avg_target_price,
                     avg_price_growth_forecast_pct,
                     first_entry_date

@@ -160,10 +160,34 @@ class RecommendationsDatabase:
                 quality_description_words INTEGER,
                 quality_has_rating INTEGER,
                 quality_reasoning_level INTEGER,
+                is_invalid INTEGER NOT NULL DEFAULT 0,
                 webpage_id INTEGER,
                 entry_date DATE,
                 FOREIGN KEY (isin) REFERENCES stock(isin),
                 FOREIGN KEY (webpage_id) REFERENCES webpage(id)
+            )
+        """)
+
+        # Recommendation feedback table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recommendation_id INTEGER NOT NULL,
+                stock_id INTEGER,
+                feedback_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (recommendation_id) REFERENCES input_stock_recommendation(id),
+                FOREIGN KEY (stock_id) REFERENCES stock(id)
+            )
+        """)
+
+        # Recommendation feedback invalid fields table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_feedback_invalid_fields (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feedback_id INTEGER NOT NULL,
+                field_name VARCHAR(50) NOT NULL,
+                FOREIGN KEY (feedback_id) REFERENCES recommendation_feedback(id)
             )
         """)
 
@@ -231,6 +255,9 @@ class RecommendationsDatabase:
         
         # Migration: Add quality columns if they don't exist
         self._add_quality_columns_if_missing()
+
+        # Migration: Add is_invalid column if it doesn't exist
+        self._add_is_invalid_column_if_missing()
         
         # Migration: Add fair_price_dcf column to recommended_stock if it doesn't exist
         self._add_fair_price_dcf_column_if_missing()
@@ -279,6 +306,21 @@ class RecommendationsDatabase:
                 logger.info(f"Added {col_name} column to input_stock_recommendation table")
         
         conn.commit()
+        conn.close()
+
+    def _add_is_invalid_column_if_missing(self):
+        """Add is_invalid column to input_stock_recommendation table if it doesn't exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(input_stock_recommendation)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'is_invalid' not in columns:
+            cursor.execute("ALTER TABLE input_stock_recommendation ADD COLUMN is_invalid INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+            logger.info("Added is_invalid column to input_stock_recommendation table")
+
         conn.close()
     
     def _add_fair_price_dcf_column_if_missing(self):
@@ -577,9 +619,9 @@ class RecommendationsDatabase:
                     ticker, exchange, stock_id, isin, stock_name, rating_id, analysis_date,
                     price, fair_price, target_price, price_growth_forecast_pct, pe,
                     recommendation_text, quality_score, quality_description_words,
-                    quality_has_rating, quality_reasoning_level,
+                    quality_has_rating, quality_reasoning_level, is_invalid,
                     webpage_id, entry_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 recommendation.get('ticker'),
                 recommendation.get('exchange'),
@@ -598,6 +640,7 @@ class RecommendationsDatabase:
                 recommendation.get('quality_description_words'),
                 1 if recommendation.get('quality_has_rating') else 0,
                 recommendation.get('quality_reasoning_level'),
+                recommendation.get('is_invalid', 0),
                 recommendation.get('webpage_id'),
                 recommendation.get('entry_date')
             ))
@@ -627,6 +670,7 @@ class RecommendationsDatabase:
                 avg(target_price) as target_price, avg(price_growth_forecast_pct) as price_growth_forecast_pct            
             FROM input_stock_recommendation isr
             JOIN ref_stock_rating rsr ON isr.rating_id = rsr.id
+            WHERE IFNULL(isr.is_invalid, 0) = 0
             GROUP BY ticker, exchange, stock_name, rsr.name
             ORDER BY isr.rating_id DESC
         """)
@@ -779,13 +823,22 @@ class RecommendationsDatabase:
         """Upsert recommended_stock table from input_stock_recommendation table."""
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        # Normalize stock_id early when provided
+        normalized_stock_id = None
+        if stock_id is not None:
+            try:
+                normalized_stock_id = int(stock_id)
+            except Exception:
+                conn.close()
+                raise ValueError(f"stock_id must be an integer, got {stock_id!r}")
         
         # Build query to aggregate data from input_stock_recommendation
-        if stock_id:
-            where_clause = "WHERE stock_id = ?"
-            params = (stock_id,)
+        if normalized_stock_id is not None:
+            where_clause = "WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0"
+            params = (normalized_stock_id,)
         else:
-            where_clause = ""
+            where_clause = "WHERE IFNULL(is_invalid, 0) = 0"
             params = ()
         
         # Get aggregated data for each stock
@@ -805,6 +858,18 @@ class RecommendationsDatabase:
         
         cursor.execute(query, params)
         aggregated_data = cursor.fetchall()
+
+        # If recalculating one stock and there are no valid input recommendations left,
+        # remove stale recommended_stock row for that stock.
+        if normalized_stock_id is not None and not aggregated_data:
+            cursor.execute(
+                "DELETE FROM recommended_stock WHERE stock_id = ?",
+                (normalized_stock_id,)
+            )
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return deleted_count
         
         upserted_count = 0
         inserted_count = 0
@@ -1028,7 +1093,7 @@ class RecommendationsDatabase:
             FROM input_stock_recommendation isr
             JOIN ref_stock_rating rsr ON isr.rating_id = rsr.id
             LEFT JOIN webpage w ON isr.webpage_id = w.id
-            WHERE isr.stock_id = ?
+            WHERE isr.stock_id = ? AND IFNULL(isr.is_invalid, 0) = 0
             ORDER BY isr.analysis_date DESC
         """, (stock_id,))
         
@@ -1061,7 +1126,7 @@ class RecommendationsDatabase:
                 COUNT(*) as total_count,
                 AVG(CAST(rating_id AS REAL)) as avg_rating
             FROM input_stock_recommendation
-            WHERE stock_id = ?
+            WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0
         """, (stock_id,))
         
         result = cursor.fetchone()
@@ -1404,6 +1469,70 @@ class RecommendationsDatabase:
         note_id = cursor.lastrowid
         conn.close()
         return note_id
+
+    def mark_recommendation_invalid(
+        self,
+        recommendation_id: int,
+        feedback_text: str,
+        invalid_fields: List[str]
+    ) -> int:
+        """Mark an input recommendation as invalid and store user feedback.
+
+        Returns:
+            stock_id for the invalidated recommendation
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            recommendation_id = int(recommendation_id)
+        except Exception:
+            conn.close()
+            raise ValueError(f"recommendation_id must be an integer, got {recommendation_id!r}")
+
+        cursor.execute(
+            "SELECT stock_id, is_invalid FROM input_stock_recommendation WHERE id = ?",
+            (recommendation_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            raise ValueError(f"Recommendation {recommendation_id} not found")
+
+        stock_id, is_invalid = row
+        if is_invalid == 1:
+            conn.close()
+            return stock_id
+
+        cursor.execute(
+            "UPDATE input_stock_recommendation SET is_invalid = 1 WHERE id = ?",
+            (recommendation_id,)
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO recommendation_feedback (
+                recommendation_id, stock_id, feedback_text
+            ) VALUES (?, ?, ?)
+            """,
+            (recommendation_id, stock_id, feedback_text)
+        )
+
+        feedback_id = cursor.lastrowid
+
+        for field_name in set(invalid_fields or []):
+            cursor.execute(
+                """
+                INSERT INTO recommendation_feedback_invalid_fields (
+                    feedback_id, field_name
+                ) VALUES (?, ?)
+                """,
+                (feedback_id, field_name)
+            )
+
+        conn.commit()
+        conn.close()
+        return stock_id
 
     def get_stock_notes(self, stock_id: int) -> List[Dict]:
         """Retrieve all notes for a specific stock."""

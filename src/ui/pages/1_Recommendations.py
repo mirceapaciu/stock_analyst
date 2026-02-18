@@ -587,6 +587,7 @@ try:
                 if selected_rec_rows:
                     selected_rec_idx = selected_rec_rows[0]
                     selected_rec = input_df.iloc[selected_rec_idx]
+                    selected_rec_id = selected_rec.get('id')
                     webpage_id = selected_rec.get('webpage_id')
                     
                     if pd.notna(webpage_id):
@@ -606,6 +607,58 @@ try:
                                 except Exception as e:
                                     st.error(f"❌ Error opening PDF: {str(e)}")
                                     st.info(f"📁 PDF location: {abs_pdf_path}")
+
+                    if pd.notna(selected_rec_id):
+                        with st.expander("🚩 Mark recommendation as incorrect"):
+                            st.caption("Invalid recommendations are excluded from UI and recommended stock upserts.")
+                            with st.form(key=f"invalidate_rec_form_{int(selected_rec_id)}"):
+                                feedback_text = st.text_area(
+                                    "What is wrong with this recommendation?",
+                                    placeholder="Explain why this recommendation is incorrect...",
+                                    key=f"feedback_text_{int(selected_rec_id)}"
+                                )
+                                invalid_fields = st.multiselect(
+                                    "Incorrect fields",
+                                    options=[
+                                        'fair_price',
+                                        'target_price',
+                                        'recommendation_text',
+                                        'quality_score'
+                                    ],
+                                    key=f"invalid_fields_{int(selected_rec_id)}"
+                                )
+                                confirm_invalid = st.checkbox(
+                                    "Mark this recommendation as invalid",
+                                    key=f"confirm_invalid_{int(selected_rec_id)}"
+                                )
+
+                                submitted = st.form_submit_button(
+                                    "Save feedback and invalidate",
+                                    type="primary"
+                                )
+
+                                if submitted:
+                                    if not confirm_invalid:
+                                        st.error("❌ Please confirm invalidation by checking the box.")
+                                    elif not feedback_text.strip():
+                                        st.error("❌ Please provide feedback explaining what is wrong.")
+                                    elif not invalid_fields:
+                                        st.error("❌ Please select at least one incorrect field.")
+                                    else:
+                                        try:
+                                            with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+                                                stock_id_from_rec = db.mark_recommendation_invalid(
+                                                    recommendation_id=int(selected_rec_id),
+                                                    feedback_text=feedback_text.strip(),
+                                                    invalid_fields=invalid_fields
+                                                )
+                                                db.upsert_recommended_stock_from_input(stock_id=stock_id_from_rec)
+
+                                            st.success("✅ Recommendation marked as incorrect and feedback saved.")
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"❌ Failed to save feedback: {str(e)}")
 
             else:
                 st.dataframe(input_df, width='stretch', hide_index=True)

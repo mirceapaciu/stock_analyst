@@ -1081,6 +1081,23 @@ def save_stock_recommendation_to_db(db: RecommendationsDatabase, recommendation:
     """Load a single stock recommendation into the database."""
     rec = recommendation
     try:
+        def _parse_optional_float(value) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if not cleaned or cleaned.upper() == 'N/A':
+                    return None
+                cleaned = cleaned.replace(',', '')
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
         exchange = rec.get('exchange', 'NASDAQ')
         mic = db.get_mic_by_exchange(exchange)
 
@@ -1103,6 +1120,15 @@ def save_stock_recommendation_to_db(db: RecommendationsDatabase, recommendation:
         if not (1 <= rating <= 5):
             rating = 3  # Default to Hold if out of range
 
+        parsed_price = _parse_optional_float(rec.get('price'))
+        parsed_target_price = _parse_optional_float(rec.get('target_price'))
+        parsed_fair_price = _parse_optional_float(rec.get('fair_price'))
+        if parsed_fair_price is None and parsed_target_price is not None:
+            parsed_fair_price = parsed_target_price
+
+        parsed_price_growth_forecast_pct = _parse_optional_float(rec.get('price_growth_forecast_pct'))
+        parsed_pe = _parse_optional_float(rec.get('pe'))
+
         recommendation_data = {
             'ticker': rec.get('ticker'),
             'exchange': rec.get('exchange', 'NASDAQ'),
@@ -1111,11 +1137,11 @@ def save_stock_recommendation_to_db(db: RecommendationsDatabase, recommendation:
             'stock_name': rec.get('stock_name', ''),
             'rating_id': rating,
             'analysis_date': rec.get('analysis_date', str(date.today())),
-            'price': float(rec.get('price', 0)) if rec.get('price') and rec.get('price') != 'N/A' else None,
-            'fair_price': float(rec.get('fair_price', 0)) if rec.get('fair_price') and rec.get('fair_price') != 'N/A' else None,
-            'target_price': float(rec.get('target_price', 0)) if rec.get('target_price') and rec.get('target_price') != 'N/A' else None,
-            'price_growth_forecast_pct': float(rec.get('price_growth_forecast_pct', 0)) if rec.get('price_growth_forecast_pct') and rec.get('price_growth_forecast_pct') != 'N/A' else None,
-            'pe': float(rec.get('pe', 0)) if rec.get('pe') and rec.get('pe') != 'N/A' else None,
+            'price': parsed_price,
+            'fair_price': parsed_fair_price,
+            'target_price': parsed_target_price,
+            'price_growth_forecast_pct': parsed_price_growth_forecast_pct,
+            'pe': parsed_pe,
             'recommendation_text': rec.get('recommendation_text', ''),
             'quality_score': rec.get('quality_score'),
             'quality_description_words': rec.get('quality_description_words'),

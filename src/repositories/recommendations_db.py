@@ -835,10 +835,10 @@ class RecommendationsDatabase:
         
         # Build query to aggregate data from input_stock_recommendation
         if normalized_stock_id is not None:
-            where_clause = "WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0"
+            where_clause = "WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
             params = (normalized_stock_id,)
         else:
-            where_clause = "WHERE IFNULL(is_invalid, 0) = 0"
+            where_clause = "WHERE IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
             params = ()
         
         # Get aggregated data for each stock

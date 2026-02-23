@@ -76,7 +76,8 @@ class RecommendationsDatabase:
                 acronym VARCHAR(10),
                 iso_country_code VARCHAR(2),
                 city VARCHAR(50),
-                website VARCHAR(100)
+                website VARCHAR(100),
+                currency_code VARCHAR(10)
             )
         """)
 
@@ -262,6 +263,9 @@ class RecommendationsDatabase:
 
         # Migration: Add currency_code column if it doesn't exist
         self._add_currency_code_column_if_missing()
+
+        # Migration: Add currency_code column to market table if it doesn't exist
+        self._add_market_currency_code_column_if_missing()
         
         # Migration: Add fair_price_dcf column to recommended_stock if it doesn't exist
         self._add_fair_price_dcf_column_if_missing()
@@ -339,6 +343,21 @@ class RecommendationsDatabase:
             cursor.execute("ALTER TABLE input_stock_recommendation ADD COLUMN currency_code VARCHAR(10)")
             conn.commit()
             logger.info("Added currency_code column to input_stock_recommendation table")
+
+        conn.close()
+
+    def _add_market_currency_code_column_if_missing(self):
+        """Add currency_code column to market table if it doesn't exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(market)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'currency_code' not in columns:
+            cursor.execute("ALTER TABLE market ADD COLUMN currency_code VARCHAR(10)")
+            conn.commit()
+            logger.info("Added currency_code column to market table")
 
         conn.close()
     

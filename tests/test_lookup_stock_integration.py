@@ -191,6 +191,18 @@ class TestLookupStockEdgeCases:
                           for em in expected_matches), \
                     f"Exchange {result['exchange']} should match one of {expected_matches}"
 
+    def test_lookup_fallback_on_exchange_conflict_with_name_match(self):
+        """
+        Test fallback behavior when requested exchange conflicts with actual listing exchange.
+
+        CPB is listed on NASDAQ; requesting NYSE should still resolve by ticker + approximate name match.
+        """
+        result = lookup_stock("CPB", "NYSE", stock_name="Campbell's")
+
+        assert result is not None, "CPB should resolve even when exchange conflicts"
+        assert result["ticker"] == "CPB"
+        assert "CAMPBELL" in result["stock_name"].upper()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

@@ -84,6 +84,17 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
         if results:
             logger.info(f"Found {ticker} in database: {len(results)} result(s)")
             return _select_best_match(results, stock_name)
+
+        # If exchange was specified and nothing found, retry DB lookup without exchange
+        # to handle cases where extracted exchange is incorrect.
+        if exchange:
+            fallback_results = db.find_stock_in_db(ticker)
+            if fallback_results:
+                logger.info(
+                    f"Found {ticker} in database with exchange mismatch (requested={exchange}). "
+                    f"Using best ticker-only match from {len(fallback_results)} result(s)."
+                )
+                return _select_best_match(fallback_results, stock_name)
         
         # Not found in database - query FMP API
         logger.info(f"Stock {ticker} not found in DB, querying FMP API...")
@@ -97,6 +108,7 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
             
             # Insert all results into the stock table
             inserted_stocks = []
+            exact_symbol_candidates = []
             for result in fmp_results:
                 symbol = result.get('symbol', '')
                 name = result.get('name', '')
@@ -109,6 +121,8 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
                 # Skip non-matching symbols
                 if symbol.upper() != ticker.upper():
                     continue
+
+                exact_symbol_candidates.append(result)
                 
                 # Skip non-matching exchanges if exchange was specified
                 # Use flexible matching: check if requested exchange is in FMP exchange name
@@ -142,8 +156,54 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
                 except Exception as e:
                     logger.error(f"Error inserting stock {symbol}: {e}")
                     continue
+
+            if inserted_stocks:
+                return _select_best_match(inserted_stocks, stock_name)
+
+            # Fallback: symbol exists in FMP but exchange did not match requested one.
+            # Retry without exchange filtering and choose best approximate name match.
+            if exchange and exact_symbol_candidates:
+                logger.info(
+                    f"Found {ticker} in FMP with exchange conflict (requested={exchange}). "
+                    "Retrying without exchange filter."
+                )
+
+                if stock_name and stock_name != 'N/A':
+                    from difflib import SequenceMatcher
+
+                    fallback_candidate = max(
+                        exact_symbol_candidates,
+                        key=lambda candidate: SequenceMatcher(
+                            None,
+                            stock_name.lower(),
+                            (candidate.get('name') or '').lower()
+                        ).ratio()
+                    )
+                else:
+                    fallback_candidate = exact_symbol_candidates[0]
+
+                fallback_symbol = fallback_candidate.get('symbol', '')
+                fallback_name = fallback_candidate.get('name', '')
+                fallback_exchange = fallback_candidate.get('exchange', 'N/A')
+                fallback_mic = db.get_mic_by_exchange(fallback_exchange)
+
+                try:
+                    db.upsert_stock(
+                        isin=None,
+                        ticker=fallback_symbol,
+                        exchange=fallback_exchange,
+                        stock_name=fallback_name,
+                        mic=fallback_mic
+                    )
+                except Exception as e:
+                    logger.error(f"Error inserting fallback stock {fallback_symbol}: {e}")
+                    return None
+
+                fallback_inserted = db.find_stock_in_db(fallback_symbol, fallback_exchange)
+                if fallback_inserted:
+                    return _select_best_match(fallback_inserted, stock_name)
             
-            return _select_best_match(inserted_stocks, stock_name)
+            return None
             
         except Exception as e:
             logger.error(f"Error fetching from FMP API for {ticker}: {e}")

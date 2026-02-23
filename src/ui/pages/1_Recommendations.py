@@ -610,6 +610,31 @@ try:
                                     st.info(f"📁 PDF location: {abs_pdf_path}")
 
                     if pd.notna(selected_rec_id):
+                        with st.expander("🗑️ Delete recommendation"):
+                            st.caption("Delete this input recommendation and recalculate the recommended stock aggregates.")
+                            confirm_delete = st.checkbox(
+                                "I confirm I want to delete this recommendation",
+                                key=f"confirm_delete_rec_{int(selected_rec_id)}"
+                            )
+                            if st.button(
+                                f"Delete recommendation #{int(selected_rec_id)}",
+                                type="secondary",
+                                key=f"delete_rec_{int(selected_rec_id)}"
+                            ):
+                                if not confirm_delete:
+                                    st.error("❌ Please confirm deletion by checking the box.")
+                                else:
+                                    try:
+                                        with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+                                            db.delete_stock_recommendation(int(selected_rec_id))
+                                            db.upsert_recommended_stock_from_input(stock_id=int(stock_id))
+
+                                        st.success("✅ Recommendation deleted and recommended stock recalculated.")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Failed to delete recommendation: {str(e)}")
+
                         with st.expander("🚩 Mark recommendation as incorrect"):
                             st.caption("Invalid recommendations are excluded from UI and recommended stock upserts.")
                             with st.form(key=f"invalidate_rec_form_{int(selected_rec_id)}"):

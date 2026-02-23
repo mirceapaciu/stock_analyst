@@ -625,34 +625,6 @@ def validate_ticker_in_text(ticker: str, text: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
-def normalize_exchange_if_explicit(exchange: str, page_text: str) -> str:
-    """Keep exchange only when explicitly present in page text; otherwise return N/A."""
-    if not exchange:
-        return 'N/A'
-
-    exchange_value = exchange.strip()
-    if not exchange_value:
-        return 'N/A'
-
-    exchange_upper = exchange_value.upper()
-    if exchange_upper == 'N/A':
-        return 'N/A'
-
-    text_upper = (page_text or '').upper()
-
-    explicit_exchange_tokens = {
-        'NASDAQ': ['NASDAQ', 'XNAS'],
-        'NYSE': ['NYSE', 'XNYS', 'NEW YORK STOCK EXCHANGE'],
-        'AMEX': ['AMEX', 'NYSE AMERICAN', 'XASE'],
-    }
-
-    tokens = explicit_exchange_tokens.get(exchange_upper, [exchange_upper])
-    if any(token in text_upper for token in tokens):
-        return exchange_value
-
-    return 'N/A'
-
-
 def calculate_recommendation_quality_score(quality: RecommendationQuality) -> int:
     """
     Calculate total quality score from LLM-extracted components.
@@ -718,7 +690,7 @@ def extract_stock_recommendations_with_llm(
             
             recommendation = {
                 'ticker': ticker_obj.ticker,
-                'exchange': normalize_exchange_if_explicit(ticker_obj.exchange, page_text),
+                'exchange': (ticker_obj.exchange or 'N/A').strip() or 'N/A',
                 'currency': ticker_obj.currency,
                 'stock_name': ticker_obj.stock_name,
                 'rating': ticker_obj.rating,

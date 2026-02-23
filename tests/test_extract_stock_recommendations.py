@@ -116,7 +116,7 @@ class TestExtractStockRecommendations:
             
             amd_rec = recommendations[0]
             assert amd_rec["ticker"] == "AMD"
-            assert amd_rec["exchange"] == "N/A"
+            assert amd_rec["exchange"] == "NASDAQ"
             assert amd_rec["currency"] == "N/A"
             assert amd_rec["stock_name"] == "Advanced Micro Devices, Inc."
             assert amd_rec["rating"] == 4  # Buy rating
@@ -149,7 +149,7 @@ class TestExtractStockRecommendations:
             
             amd_rec = recommendations[0]
             assert amd_rec["ticker"] == "AMD"
-            assert amd_rec["exchange"] == "N/A"
+            assert amd_rec["exchange"] == "NASDAQ"
             assert amd_rec["currency"] == "N/A"
             assert amd_rec["stock_name"] == "Advanced Micro Devices, Inc."
             assert amd_rec["rating"] == 3  # Hold rating (3 stars)

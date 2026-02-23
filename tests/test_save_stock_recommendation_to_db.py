@@ -34,6 +34,7 @@ class TestSaveStockRecommendationToDb:
         recommendation = {
             "ticker": "AMD",
             "exchange": "NASDAQ",
+            "currency": "usd",
             "stock_name": "Advanced Micro Devices, Inc.",
             "rating": 4,
             "analysis_date": "2026-02-18",
@@ -52,6 +53,7 @@ class TestSaveStockRecommendationToDb:
         assert db.inserted_payload is not None
         assert db.inserted_payload["target_price"] == 150.0
         assert db.inserted_payload["fair_price"] == 150.0
+        assert db.inserted_payload["currency_code"] == "USD"
 
     def test_keeps_fair_price_when_both_prices_present(self):
         db = DummyRecommendationsDatabase()

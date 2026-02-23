@@ -1131,12 +1131,17 @@ def save_stock_recommendation_to_db(db: RecommendationsDatabase, recommendation:
         if parsed_fair_price is None and parsed_target_price is not None:
             parsed_fair_price = parsed_target_price
 
+        currency_code = (rec.get('currency') or '').strip().upper()
+        if not currency_code:
+            currency_code = None
+
         parsed_price_growth_forecast_pct = _parse_optional_float(rec.get('price_growth_forecast_pct'))
         parsed_pe = _parse_optional_float(rec.get('pe'))
 
         recommendation_data = {
             'ticker': rec.get('ticker'),
             'exchange': rec.get('exchange', 'NASDAQ'),
+            'currency_code': currency_code,
             'stock_id': stock_id,
             'isin': None,
             'stock_name': rec.get('stock_name', ''),

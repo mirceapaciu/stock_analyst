@@ -145,6 +145,7 @@ class RecommendationsDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker VARCHAR(10),
                 exchange VARCHAR(20),
+                currency_code VARCHAR(10),
                 stock_id INTEGER references stock(id),
                 isin CHAR(12),
                 stock_name VARCHAR(100),
@@ -258,6 +259,9 @@ class RecommendationsDatabase:
 
         # Migration: Add is_invalid column if it doesn't exist
         self._add_is_invalid_column_if_missing()
+
+        # Migration: Add currency_code column if it doesn't exist
+        self._add_currency_code_column_if_missing()
         
         # Migration: Add fair_price_dcf column to recommended_stock if it doesn't exist
         self._add_fair_price_dcf_column_if_missing()
@@ -320,6 +324,21 @@ class RecommendationsDatabase:
             cursor.execute("ALTER TABLE input_stock_recommendation ADD COLUMN is_invalid INTEGER NOT NULL DEFAULT 0")
             conn.commit()
             logger.info("Added is_invalid column to input_stock_recommendation table")
+
+        conn.close()
+
+    def _add_currency_code_column_if_missing(self):
+        """Add currency_code column to input_stock_recommendation table if it doesn't exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(input_stock_recommendation)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'currency_code' not in columns:
+            cursor.execute("ALTER TABLE input_stock_recommendation ADD COLUMN currency_code VARCHAR(10)")
+            conn.commit()
+            logger.info("Added currency_code column to input_stock_recommendation table")
 
         conn.close()
     
@@ -616,15 +635,16 @@ class RecommendationsDatabase:
         try:
             cursor.execute("""
                 INSERT INTO input_stock_recommendation (
-                    ticker, exchange, stock_id, isin, stock_name, rating_id, analysis_date,
+                    ticker, exchange, currency_code, stock_id, isin, stock_name, rating_id, analysis_date,
                     price, fair_price, target_price, price_growth_forecast_pct, pe,
                     recommendation_text, quality_score, quality_description_words,
                     quality_has_rating, quality_reasoning_level, is_invalid,
                     webpage_id, entry_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 recommendation.get('ticker'),
                 recommendation.get('exchange'),
+                recommendation.get('currency_code'),
                 stock_id,
                 recommendation.get('isin'),
                 recommendation.get('stock_name'),

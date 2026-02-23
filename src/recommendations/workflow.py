@@ -1217,26 +1217,44 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
     
     db = RecommendationsDatabase()
 
-    def _infer_exchange_from_currency(currency_code: str) -> Optional[str]:
+    def _name_similarity(left: str, right: str) -> float:
+        if not left or not right:
+            return 0.0
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, left.lower(), right.lower()).ratio()
+
+    def _exchange_matches_hint(exchange_value: str, exchange_hints: List[str]) -> bool:
+        if not exchange_hints:
+            return True
+        if not exchange_value:
+            return False
+        exchange_upper = exchange_value.strip().upper()
+        for exchange_hint in exchange_hints:
+            hint_upper = exchange_hint.strip().upper()
+            if exchange_upper == hint_upper or hint_upper in exchange_upper or exchange_upper in hint_upper:
+                return True
+        return False
+
+    def _infer_exchange_from_currency(currency_code: str) -> List[str]:
         if not currency_code:
-            return None
+            return []
 
         currency_upper = currency_code.strip().upper()
-        currency_to_exchange = {
-            'GBP': 'LSE',
-            'GBX': 'LSE',
-            'EUR': 'XETRA',
-            'DKK': 'CPH',
-            'SEK': 'STO',
-            'NOK': 'OSL',
-            'CHF': 'SIX',
-            'JPY': 'TYO',
-            'HKD': 'HKSE',
-            'AUD': 'ASX',
-            'CAD': 'TSX',
-            'NZD': 'NZX',
+        currency_to_exchanges = {
+            'GBP': ['LSE'],
+            'GBX': ['LSE'],
+            'EUR': ['PAR', 'XETRA', 'AMS', 'BRU', 'MIL', 'MCE', 'LIS', 'VIE'],
+            'DKK': ['CPH'],
+            'SEK': ['STO'],
+            'NOK': ['OSL'],
+            'CHF': ['SIX'],
+            'JPY': ['TYO'],
+            'HKD': ['HKSE'],
+            'AUD': ['ASX'],
+            'CAD': ['TSX'],
+            'NZD': ['NZX'],
         }
-        return currency_to_exchange.get(currency_upper)
+        return currency_to_exchanges.get(currency_upper, [])
 
     def _normalize_market_cap(raw_value) -> Optional[float]:
         if raw_value is None:
@@ -1298,17 +1316,70 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
             
             try:
                 original_stock_name = rec.get('stock_name', 'N/A')
+                exchange_hints = _infer_exchange_from_currency(currency)
                 
                 if exchange and exchange != 'N/A':
                     stock_info = lookup_stock(ticker, exchange, original_stock_name)
                 else:
-                    exchange_hint = _infer_exchange_from_currency(currency)
-                    if exchange_hint:
-                        stock_info = lookup_stock(ticker, exchange_hint, original_stock_name)
+                    if exchange_hints:
+                        stock_info = None
+                        for exchange_hint in exchange_hints:
+                            stock_info = lookup_stock(ticker, exchange_hint, original_stock_name)
+                            if stock_info:
+                                break
                         if not stock_info:
                             stock_info = lookup_stock(ticker, stock_name=original_stock_name)
                     else:
                         stock_info = lookup_stock(ticker, stock_name=original_stock_name)
+
+                # Consistency checks: treat provided exchange as a soft hint and retry when
+                # resolved stock conflicts with stock_name or currency-inferred exchange.
+                if stock_info:
+                    resolved_exchange = (stock_info.get('exchange') or '').strip()
+                    resolved_name = stock_info.get('stock_name', '')
+                    name_similarity = (
+                        _name_similarity(original_stock_name, resolved_name)
+                        if original_stock_name and original_stock_name != 'N/A'
+                        else 1.0
+                    )
+                    has_name_conflict = (
+                        bool(original_stock_name and original_stock_name != 'N/A')
+                        and name_similarity < 0.45
+                    )
+                    has_exchange_conflict = not _exchange_matches_hint(resolved_exchange, exchange_hints)
+
+                    if has_name_conflict or has_exchange_conflict:
+                        currency_hint_display = ','.join(exchange_hints) if exchange_hints else 'N/A'
+                        logger.info(
+                            f"Retrying lookup for {ticker} due to consistency conflict "
+                            f"(name_similarity={name_similarity:.2f}, resolved_exchange={resolved_exchange}, "
+                            f"currency_hint={currency_hint_display})"
+                        )
+
+                        retry_candidates = []
+                        if exchange_hints:
+                            for exchange_hint in exchange_hints:
+                                hinted = lookup_stock(ticker, exchange_hint, original_stock_name)
+                                if hinted:
+                                    retry_candidates.append(hinted)
+
+                        generic = lookup_stock(ticker, stock_name=original_stock_name)
+                        if generic:
+                            retry_candidates.append(generic)
+
+                        if retry_candidates:
+                            def _candidate_score(candidate: Dict) -> tuple[float, float]:
+                                candidate_name = candidate.get('stock_name', '')
+                                candidate_exchange = candidate.get('exchange', '')
+                                similarity_score = (
+                                    _name_similarity(original_stock_name, candidate_name)
+                                    if original_stock_name and original_stock_name != 'N/A'
+                                    else 1.0
+                                )
+                                exchange_score = 1.0 if _exchange_matches_hint(candidate_exchange, exchange_hints) else 0.0
+                                return (similarity_score, exchange_score)
+
+                            stock_info = max(retry_candidates, key=_candidate_score)
                 
                 if not stock_info:
                     rec['validation_status'] = 'not_found'

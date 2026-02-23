@@ -281,11 +281,36 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
 
             # Name-based fallback for ambiguous symbols (e.g. BA -> Boeing vs BAE Systems).
             if stock_name and stock_name != 'N/A':
-                try:
-                    name_results = fmp.search_name(stock_name)
-                except Exception as name_search_error:
-                    logger.warning(f"FMP name search failed for {stock_name}: {name_search_error}")
-                    name_results = []
+                name_queries = [stock_name.strip()]
+                normalized_tokens = [
+                    token for token in re.split(r'[^A-Za-z0-9]+', stock_name.strip())
+                    if token
+                ]
+
+                uppercase_tokens = [token for token in normalized_tokens if token.isupper() and len(token) >= 3]
+                if uppercase_tokens:
+                    name_queries.extend(uppercase_tokens)
+
+                if normalized_tokens:
+                    name_queries.append(normalized_tokens[0])
+
+                seen_queries = set()
+                deduped_queries = []
+                for query in name_queries:
+                    query_key = query.lower()
+                    if query_key and query_key not in seen_queries:
+                        seen_queries.add(query_key)
+                        deduped_queries.append(query)
+
+                name_results = []
+                for query in deduped_queries:
+                    try:
+                        query_results = fmp.search_name(query)
+                        if query_results:
+                            name_results.extend(query_results)
+                    except Exception as name_search_error:
+                        logger.warning(f"FMP name search failed for query '{query}': {name_search_error}")
+                        continue
 
                 name_candidates = []
                 for candidate in name_results:

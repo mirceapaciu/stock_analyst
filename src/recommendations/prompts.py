@@ -39,6 +39,7 @@ Extract these fields:
 - tickers: Array of stock recommendations, where each item contains:
     - ticker: Stock ticker symbol (e.g., AAPL)
     - exchange: Exchange code (e.g., NASDAQ, NYSE), but ONLY if explicitly present in the content. If exchange is not explicitly stated, return "N/A".
+    - currency: Ticker/valuation currency code (e.g., USD, EUR, GBP, GBX). ONLY return a value if explicitly present in the content; otherwise return "N/A".
     - stock_name: Company name
     - rating: Recommendation rating as a NUMBER from 1 to 5, where 1=Strong Sell, 2=Sell, 3=Hold, 4=Buy, 5=Strong Buy. Follow priority order above.
     - price: Current stock price (number only, or "N/A")

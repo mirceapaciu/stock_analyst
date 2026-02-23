@@ -62,6 +62,27 @@ class FMPClient:
             if resp.status != 200:
                 raise RuntimeError(f"FMP request failed: {resp.status} {resp.reason}")
             return json.load(resp)
+
+    def search_name(self, query: str) -> List[Dict]:
+        """Search stocks by company name.
+
+        Args:
+            query: Company name query string
+
+        Returns:
+            List of matching symbols with metadata
+        """
+        params = {
+            "query": query,
+            "apikey": self.api_key
+        }
+
+        url = "https://financialmodelingprep.com/stable/search-name?" + urllib.parse.urlencode(params)
+
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"FMP request failed: {resp.status} {resp.reason}")
+            return json.load(resp)
     
     def get_quote(self, symbol: str) -> Optional[Dict]:
         """Get current quote for a stock symbol.

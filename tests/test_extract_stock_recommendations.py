@@ -117,6 +117,7 @@ class TestExtractStockRecommendations:
             amd_rec = recommendations[0]
             assert amd_rec["ticker"] == "AMD"
             assert amd_rec["exchange"] == "N/A"
+            assert amd_rec["currency"] == "N/A"
             assert amd_rec["stock_name"] == "Advanced Micro Devices, Inc."
             assert amd_rec["rating"] == 4  # Buy rating
             assert amd_rec["analysis_date"] == "2025-11-17"
@@ -149,6 +150,7 @@ class TestExtractStockRecommendations:
             amd_rec = recommendations[0]
             assert amd_rec["ticker"] == "AMD"
             assert amd_rec["exchange"] == "N/A"
+            assert amd_rec["currency"] == "N/A"
             assert amd_rec["stock_name"] == "Advanced Micro Devices, Inc."
             assert amd_rec["rating"] == 3  # Hold rating (3 stars)
             assert amd_rec["analysis_date"] == "2025-11-12"
@@ -236,6 +238,18 @@ class TestExtractStockRecommendations:
         # model_post_init should have converted stars to numeric
         assert star_recommendation.rating == 3
         assert isinstance(star_recommendation.rating, int)
+
+    def test_currency_normalization_defaults_to_na(self):
+        """Test that empty or missing currency is normalized to N/A."""
+        rec = StockRecommendation(
+            ticker="TEST",
+            currency="",
+            rating=3,
+            recommendation_text="Test",
+            quality=RecommendationQuality()
+        )
+
+        assert rec.currency == "N/A"
     
     def test_rating_normalization_from_text(self):
         """Test that text ratings are normalized to numeric 1-5."""

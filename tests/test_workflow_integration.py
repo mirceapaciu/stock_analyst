@@ -112,8 +112,8 @@ class TestSearchAndScrapeWorkflow:
         import pathlib
         
         # Load the dumped state
-        # state_file = pathlib.Path(__file__).parent.parent / "logs" / "workflow_state" / "workflow_state_20251117171119.json"
-        state_file = pathlib.Path(__file__).parent.parent / "temp" / "workflow_state_20260220181932.json"
+        # state_file = pathlib.Path(__file__).parent.parent / "logs" / "workflow_state" / "workflow_state_mc.json"
+        state_file = pathlib.Path(__file__).parent.parent / "temp" / "workflow_state_mc.json"
 
         if not state_file.exists():
             pytest.skip(f"State file not found: {state_file}. Run test_end_to_end_data_flow first.")
@@ -130,8 +130,8 @@ class TestSearchAndScrapeWorkflow:
         # Continue workflow from loaded state
         # state = filter_duplicate_node(state)
         # state = filter_known_bad_node(state)
-        # state = retrieve_nested_pages(state)
-        # state = analyze_search_result(state)
+        state = retrieve_nested_pages(state)
+        state = analyze_search_result(state)
         state = scrape_node(state)
         state = validate_tickers_node(state)
         

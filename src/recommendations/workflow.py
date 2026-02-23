@@ -37,6 +37,7 @@ class StockRecommendation(BaseModel):
     """Single stock recommendation from LLM."""
     ticker: str
     exchange: str = "N/A"
+    currency: str = "N/A"
     stock_name: str = ""
     rating: int | str = 3  # 1-5 scale: 1=Strong Sell, 2=Sell, 3=Hold, 4=Buy, 5=Strong Buy
     price: Optional[str | float | int] = "N/A"
@@ -49,6 +50,9 @@ class StockRecommendation(BaseModel):
     
     def model_post_init(self, __context):
         """Convert numeric fields to strings and normalize rating to numeric 1-5 after validation."""
+        currency_value = (self.currency or '').strip().upper()
+        self.currency = currency_value if currency_value else 'N/A'
+
         # Convert numeric fields to strings
         for field in ['price', 'fair_price', 'target_price', 'price_growth_forecast_pct', 'pe']:
             value = getattr(self, field)
@@ -715,6 +719,7 @@ def extract_stock_recommendations_with_llm(
             recommendation = {
                 'ticker': ticker_obj.ticker,
                 'exchange': normalize_exchange_if_explicit(ticker_obj.exchange, page_text),
+                'currency': ticker_obj.currency,
                 'stock_name': ticker_obj.stock_name,
                 'rating': ticker_obj.rating,
                 'analysis_date': analysis_date,
@@ -1240,6 +1245,27 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
     
     db = RecommendationsDatabase()
 
+    def _infer_exchange_from_currency(currency_code: str) -> Optional[str]:
+        if not currency_code:
+            return None
+
+        currency_upper = currency_code.strip().upper()
+        currency_to_exchange = {
+            'GBP': 'LSE',
+            'GBX': 'LSE',
+            'EUR': 'XETRA',
+            'DKK': 'CPH',
+            'SEK': 'STO',
+            'NOK': 'OSL',
+            'CHF': 'SIX',
+            'JPY': 'TYO',
+            'HKD': 'HKSE',
+            'AUD': 'ASX',
+            'CAD': 'TSX',
+            'NZD': 'NZX',
+        }
+        return currency_to_exchange.get(currency_upper)
+
     def _normalize_market_cap(raw_value) -> Optional[float]:
         if raw_value is None:
             return None
@@ -1281,6 +1307,7 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
         for rec in page.get('stock_recommendations', []):
             ticker = rec.get('ticker', '').strip()
             exchange = rec.get('exchange', '').strip()
+            currency = (rec.get('currency', '') or '').strip().upper()
 
             has_fair_price = _has_valuation_value(rec.get('fair_price'))
             has_target_price = _has_valuation_value(rec.get('target_price'))
@@ -1303,7 +1330,13 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                 if exchange and exchange != 'N/A':
                     stock_info = lookup_stock(ticker, exchange, original_stock_name)
                 else:
-                    stock_info = lookup_stock(ticker, stock_name=original_stock_name)
+                    exchange_hint = _infer_exchange_from_currency(currency)
+                    if exchange_hint:
+                        stock_info = lookup_stock(ticker, exchange_hint, original_stock_name)
+                        if not stock_info:
+                            stock_info = lookup_stock(ticker, stock_name=original_stock_name)
+                    else:
+                        stock_info = lookup_stock(ticker, stock_name=original_stock_name)
                 
                 if not stock_info:
                     rec['validation_status'] = 'not_found'

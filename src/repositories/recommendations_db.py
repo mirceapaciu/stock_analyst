@@ -1102,6 +1102,7 @@ class RecommendationsDatabase:
                 isr.id,
                 rsr.name AS rating,
                 isr.analysis_date,
+                isr.currency_code,
                 isr.price,
                 isr.fair_price,
                 isr.target_price,

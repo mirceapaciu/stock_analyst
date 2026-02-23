@@ -11,6 +11,48 @@ from repositories.recommendations_db import RecommendationsDatabase
 
 
 class TestRecommendationFeedback:
+    def test_get_input_recommendations_exposes_currency_code(self, tmp_path):
+        db_path = tmp_path / "test_currency_code_query.duckdb"
+        db = RecommendationsDatabase(str(db_path))
+
+        stock_id = db.upsert_stock(
+            isin=None,
+            ticker="SAP",
+            exchange="XETRA",
+            stock_name="SAP SE",
+            mic=None,
+        )
+
+        db.insert_stock_recommendation(
+            {
+                "ticker": "SAP",
+                "exchange": "XETRA",
+                "currency_code": "EUR",
+                "stock_id": stock_id,
+                "isin": None,
+                "stock_name": "SAP SE",
+                "rating_id": 4,
+                "analysis_date": "2026-02-01",
+                "price": 180.0,
+                "fair_price": 220.0,
+                "target_price": 230.0,
+                "price_growth_forecast_pct": 12.0,
+                "pe": 20.0,
+                "recommendation_text": "rec",
+                "quality_score": 80,
+                "quality_description_words": 140,
+                "quality_has_rating": True,
+                "quality_reasoning_level": 3,
+                "webpage_id": None,
+                "entry_date": "2026-02-01",
+            }
+        )
+
+        rows = db.get_input_recommendations_for_stock(stock_id)
+
+        assert len(rows) == 1
+        assert rows[0]["currency_code"] == "EUR"
+
     def test_mark_invalid_sets_flag_and_creates_feedback(self, tmp_path):
         db_path = tmp_path / "test_feedback.duckdb"
         db = RecommendationsDatabase(str(db_path))

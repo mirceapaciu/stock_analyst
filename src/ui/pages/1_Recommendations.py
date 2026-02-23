@@ -500,6 +500,7 @@ try:
             display_cols = {
                 'rating': 'Rating',
                 'analysis_date': 'Analysis Date',
+                'currency_code': 'Currency',
                 'price': 'Price',
                 'fair_price': 'Fair Price',
                 'target_price': 'Target Price',

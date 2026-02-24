@@ -395,6 +395,7 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
     """Fetch webpage and return (page_text, parsed_soup, original_html, pdf_bytes)."""
     if use_browser:
         from playwright.async_api import async_playwright
+        import re
         
         async def run_playwright_async():
             async with async_playwright() as p:
@@ -450,6 +451,151 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                             originalQuery(parameters)
                     );
                 """)
+
+                async def _expand_collapsed_content() -> int:
+                    """Expand article text by clicking common 'read more/show more' controls."""
+                    expansion_patterns = [
+                        r"read\\s+more",
+                        r"show\\s+more",
+                        r"see\\s+more",
+                        r"view\\s+more",
+                        r"continue\\s+reading",
+                        r"continue",
+                        r"expand",
+                        r"read\\s+full",
+                        r"full\\s+(article|story|text|content)",
+                        r"load\\s+more",
+                    ]
+                    expand_regex = re.compile("|".join(expansion_patterns), re.IGNORECASE)
+
+                    async def _click_in_frame(frame) -> int:
+                        clicked_count = 0
+
+                        role_locators = [
+                            frame.get_by_role("button", name=expand_regex),
+                            frame.get_by_role("link", name=expand_regex),
+                        ]
+                        css_locators = [
+                            frame.locator("button, [role='button'], summary"),
+                            frame.locator("a[href^='#'], a[href^='javascript:']"),
+                            frame.locator("[aria-expanded='false']"),
+                            frame.locator("[class*='read-more'], [id*='read-more']"),
+                            frame.locator("[class*='show-more'], [id*='show-more']"),
+                            frame.locator("[class*='expand'], [id*='expand']"),
+                            frame.locator("[class*='continue'], [id*='continue']"),
+                        ]
+
+                        for locator in role_locators + css_locators:
+                            try:
+                                count = await locator.count()
+                            except Exception:
+                                continue
+
+                            count = min(count, 12)
+                            for index in range(count):
+                                try:
+                                    candidate = locator.nth(index)
+                                    text_blob = (
+                                        ((await candidate.inner_text(timeout=500)) or "") + " " +
+                                        ((await candidate.get_attribute("aria-label")) or "") + " " +
+                                        ((await candidate.get_attribute("title")) or "") + " " +
+                                        ((await candidate.get_attribute("class")) or "") + " " +
+                                        ((await candidate.get_attribute("id")) or "")
+                                    )
+
+                                    if not expand_regex.search(text_blob):
+                                        continue
+
+                                    if not await candidate.is_visible() or not await candidate.is_enabled():
+                                        continue
+
+                                    tag_name = await candidate.evaluate("el => (el.tagName || '').toLowerCase()")
+                                    if tag_name == 'a':
+                                        href = (await candidate.get_attribute('href') or '').strip().lower()
+                                        if href and not (href.startswith('#') or href.startswith('javascript:')):
+                                            continue
+
+                                    await candidate.scroll_into_view_if_needed(timeout=1000)
+                                    await candidate.click(timeout=1500, force=True)
+                                    clicked_count += 1
+                                    await page.wait_for_timeout(600)
+                                except Exception:
+                                    continue
+
+                        # Fallback JavaScript click pass for non-standard controls
+                        try:
+                            js_clicked = await frame.evaluate(
+                                """
+                                () => {
+                                    const regex = /read\\s+more|show\\s+more|see\\s+more|view\\s+more|continue\\s+reading|read\\s+full|full\\s+(article|story|text|content)|expand|load\\s+more/i;
+                                    const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], summary, [aria-expanded]'));
+                                    let clicked = 0;
+
+                                    const isVisible = (el) => {
+                                        const style = window.getComputedStyle(el);
+                                        const rect = el.getBoundingClientRect();
+                                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                                    };
+
+                                    for (const el of nodes.slice(0, 200)) {
+                                        try {
+                                            if (el.dataset.copilotExpandedClicked === '1') continue;
+
+                                            const text = `${el.innerText || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.className || ''} ${el.id || ''}`;
+                                            if (!regex.test(text)) continue;
+                                            if (!isVisible(el) || el.disabled) continue;
+
+                                            if (el.tagName.toLowerCase() === 'a') {
+                                                const href = (el.getAttribute('href') || '').trim().toLowerCase();
+                                                if (href && !(href.startsWith('#') || href.startsWith('javascript:'))) continue;
+                                            }
+
+                                            el.dataset.copilotExpandedClicked = '1';
+                                            el.click();
+                                            clicked += 1;
+                                        } catch {
+                                            // Ignore element-level failures
+                                        }
+                                    }
+
+                                    return clicked;
+                                }
+                                """
+                            )
+                            if isinstance(js_clicked, int):
+                                clicked_count += js_clicked
+                        except Exception:
+                            pass
+
+                        return clicked_count
+
+                    total_clicked = 0
+
+                    # Scroll to trigger lazy-loaded sections first
+                    try:
+                        for _ in range(4):
+                            await page.mouse.wheel(0, 1800)
+                            await page.wait_for_timeout(450)
+                        await page.evaluate("window.scrollTo(0, 0)")
+                        await page.wait_for_timeout(500)
+                    except Exception:
+                        pass
+
+                    for _ in range(5):
+                        round_clicks = 0
+                        for frame in page.frames:
+                            try:
+                                round_clicks += await _click_in_frame(frame)
+                            except Exception:
+                                continue
+
+                        total_clicked += round_clicks
+                        if round_clicks == 0:
+                            break
+
+                        await page.wait_for_timeout(1200)
+
+                    return total_clicked
                 
                 try:
                     # Navigate and wait for DOM to be ready (more reliable than networkidle for ad-heavy sites)
@@ -482,6 +628,13 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                                 break
                         except Exception:
                             continue
+
+                    # Expand collapsed article content prior to extracting text/PDF
+                    expanded_clicks = await _expand_collapsed_content()
+                    if expanded_clicks > 0:
+                        logger.info(f"Expanded collapsed content with {expanded_clicks} click(s) for {url}")
+                    else:
+                        logger.debug(f"No expandable controls detected for {url}")
                     
                     await page.wait_for_timeout(2000)
                     

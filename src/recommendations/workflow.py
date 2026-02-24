@@ -471,6 +471,27 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                     async def _click_in_frame(frame) -> int:
                         clicked_count = 0
 
+                        # Site-specific expand controls (known problematic patterns)
+                        try:
+                            site_specific_locators = [
+                                frame.locator("span.show_article"),
+                                frame.locator(".archive_collapse"),
+                            ]
+                            for locator in site_specific_locators:
+                                count = min(await locator.count(), 5)
+                                for index in range(count):
+                                    try:
+                                        candidate = locator.nth(index)
+                                        if await candidate.is_visible() and await candidate.is_enabled():
+                                            await candidate.scroll_into_view_if_needed(timeout=1000)
+                                            await candidate.click(timeout=1500, force=True)
+                                            clicked_count += 1
+                                            await page.wait_for_timeout(500)
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            pass
+
                         role_locators = [
                             frame.get_by_role("button", name=expand_regex),
                             frame.get_by_role("link", name=expand_regex),
@@ -653,7 +674,9 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                             'iframe[src*="doubleclick"]',
                             'iframe[src*="googlesyndication"]',
                             '[class*="modal-backdrop"]',
-                            '[class*="overlay"]'
+                            '[class*="overlay"]',
+                            '.archive_collapse',
+                            '.show_article'
                         ];
                         
                         selectorsToHide.forEach(selector => {
@@ -727,6 +750,10 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
         soup = BeautifulSoup(html_content, 'html.parser')
     
     for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+        element.decompose()
+
+    # Remove known "expand/read more" controls from extracted text
+    for element in soup.select('.archive_collapse, .show_article'):
         element.decompose()
     
     main_content = None

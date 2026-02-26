@@ -6,5 +6,6 @@ through web scraping and AI-powered analysis using LangGraph workflows.
 """
 
 from recommendations.workflow import create_workflow
+from recommendations.pdf_workflow import create_pdf_workflow
 
-__all__ = ['create_workflow']
+__all__ = ['create_workflow', 'create_pdf_workflow']

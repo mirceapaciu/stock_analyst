@@ -8,7 +8,7 @@ from typing import List, Dict
 from datetime import date, timedelta
 from pathlib import Path
 import time
-from config import RECOMMENDATIONS_DB_PATH, FINNHUB_API_KEY
+from config import RECOMMENDATIONS_DB_PATH, FINNHUB_API_KEY, RECOMMENDATION_LOOKBACK_MONTHS
 from utils.s3_storage import get_s3_storage
 
 logger = logging.getLogger(__name__)
@@ -859,7 +859,11 @@ class RecommendationsDatabase:
         return [dict(row) for row in results]
     
     def upsert_recommended_stock_from_input(self, stock_id: int = None) -> int:
-        """Upsert recommended_stock table from input_stock_recommendation table."""
+        """Upsert recommended_stock table from recent input_stock_recommendation rows.
+
+        Only recommendations within RECOMMENDATION_LOOKBACK_MONTHS of each stock's
+        latest analysis_date are considered for aggregation.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -872,17 +876,37 @@ class RecommendationsDatabase:
                 conn.close()
                 raise ValueError(f"stock_id must be an integer, got {stock_id!r}")
         
-        # Build query to aggregate data from input_stock_recommendation
+        # Build query to aggregate data from input_stock_recommendation.
+        # Keep only recommendations within RECOMMENDATION_LOOKBACK_MONTHS of each stock's newest
+        # analysis_date.
         if normalized_stock_id is not None:
-            where_clause = "WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
-            params = (normalized_stock_id,)
+            eligible_where_clause = "WHERE stock_id = ? AND IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
+            eligible_params = (normalized_stock_id,)
         else:
-            where_clause = "WHERE IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
-            params = ()
+            eligible_where_clause = "WHERE IFNULL(is_invalid, 0) = 0 AND rating_id > 0"
+            eligible_params = ()
         
+        lookback_modifier = f"-{RECOMMENDATION_LOOKBACK_MONTHS} months"
+
         # Get aggregated data for each stock
         query = f"""
-            SELECT 
+            WITH latest_per_stock AS (
+                SELECT
+                    stock_id,
+                    MAX(analysis_date) AS latest_analysis_date
+                FROM input_stock_recommendation
+                {eligible_where_clause}
+                GROUP BY stock_id
+            ),
+            recent_recommendations AS (
+                SELECT isr.*
+                FROM input_stock_recommendation isr
+                JOIN latest_per_stock lps ON lps.stock_id = isr.stock_id
+                WHERE IFNULL(isr.is_invalid, 0) = 0
+                  AND isr.rating_id > 0
+                  AND date(isr.analysis_date) >= date(lps.latest_analysis_date, ?)
+            )
+            SELECT
                 stock_id,
                 AVG(CAST(rating_id AS REAL)) as avg_rating,
                 MAX(analysis_date) as last_analysis_date,
@@ -890,12 +914,11 @@ class RecommendationsDatabase:
                 AVG(target_price) as avg_target_price,
                 AVG(price_growth_forecast_pct) as avg_price_growth_forecast_pct,
                 MIN(entry_date) as first_entry_date
-            FROM input_stock_recommendation
-            {where_clause}
+            FROM recent_recommendations
             GROUP BY stock_id
         """
         
-        cursor.execute(query, params)
+        cursor.execute(query, eligible_params + (lookback_modifier,) + eligible_params)
         aggregated_data = cursor.fetchall()
 
         # If recalculating one stock and there are no valid input recommendations left,

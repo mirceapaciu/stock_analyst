@@ -73,3 +73,6 @@ MIN_MARKET_CAP = float(os.getenv("MIN_MARKET_CAP", "1000000000"))  # $1B
 
 # Thread pool settings
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+
+# Recommendations aggregation settings
+RECOMMENDATION_LOOKBACK_MONTHS = max(0, int(os.getenv("RECOMMENDATION_LOOKBACK_MONTHS", "2")))

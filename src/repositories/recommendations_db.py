@@ -918,7 +918,7 @@ class RecommendationsDatabase:
             GROUP BY stock_id
         """
         
-        cursor.execute(query, eligible_params + (lookback_modifier,) + eligible_params)
+        cursor.execute(query, eligible_params + (lookback_modifier,))
         aggregated_data = cursor.fetchall()
 
         # If recalculating one stock and there are no valid input recommendations left,

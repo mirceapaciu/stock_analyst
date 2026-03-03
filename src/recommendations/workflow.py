@@ -1473,6 +1473,88 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
             return True
         except (TypeError, ValueError):
             return False
+
+    def _parse_valuation_float(raw_value) -> Optional[float]:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip()
+            if not normalized:
+                return None
+            upper_normalized = normalized.upper()
+            if upper_normalized in {'N/A', 'NA', 'NULL', 'NONE'}:
+                return None
+            normalized = normalized.replace(',', '').replace('$', '').replace('%', '')
+            try:
+                return float(normalized)
+            except ValueError:
+                return None
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return None
+
+    def _detect_rating_data_inconsistency(rec: Dict) -> Optional[str]:
+        recommendation_text = (rec.get('recommendation_text') or '').strip()
+        text_lower = recommendation_text.lower()
+
+        rating_raw = rec.get('rating')
+        try:
+            rating_value = int(rating_raw)
+        except (TypeError, ValueError):
+            rating_value = None
+
+        if rating_value is not None and 1 <= rating_value <= 5 and recommendation_text:
+            import re
+            star_match = re.search(r'\b([1-5])\s*[- ]?\s*star\b', recommendation_text, flags=re.IGNORECASE)
+            if star_match:
+                explicit_star_rating = int(star_match.group(1))
+                if explicit_star_rating != rating_value:
+                    return (
+                        f"Explicit star rating ({explicit_star_rating}) conflicts with extracted rating ({rating_value})"
+                    )
+
+        price_value = _parse_valuation_float(rec.get('price'))
+        fair_value = _parse_valuation_float(rec.get('fair_price'))
+        target_value = _parse_valuation_float(rec.get('target_price'))
+        reference_value = fair_value if fair_value is not None else target_value
+
+        has_overvalued_cue = any(keyword in text_lower for keyword in ('overvalued', 'premium'))
+        has_undervalued_cue = any(keyword in text_lower for keyword in ('undervalued', 'discount'))
+
+        if rating_value is not None and 1 <= rating_value <= 5:
+            if has_overvalued_cue and rating_value >= 4:
+                return "Text indicates overvaluation/premium but rating is Buy/Strong Buy"
+            if has_undervalued_cue and rating_value <= 2:
+                return "Text indicates undervaluation/discount but rating is Sell/Strong Sell"
+
+        if (
+            rating_value is not None
+            and 1 <= rating_value <= 5
+            and price_value is not None
+            and reference_value is not None
+            and reference_value > 0
+        ):
+            mispricing = (price_value - reference_value) / reference_value
+            if mispricing >= 0.20 and rating_value >= 4:
+                return (
+                    f"Price is {mispricing * 100:.1f}% above fair/target value but rating is Buy/Strong Buy"
+                )
+            if mispricing <= -0.20 and rating_value <= 2:
+                return (
+                    f"Price is {abs(mispricing) * 100:.1f}% below fair/target value but rating is Sell/Strong Sell"
+                )
+
+            if has_overvalued_cue and mispricing <= -0.10:
+                return (
+                    f"Text indicates overvaluation/premium but valuation implies {abs(mispricing) * 100:.1f}% discount"
+                )
+            if has_undervalued_cue and mispricing >= 0.10:
+                return (
+                    f"Text indicates undervaluation/discount but valuation implies {mispricing * 100:.1f}% premium"
+                )
+
+        return None
     
     validated_count = 0
     enriched_count = 0
@@ -1497,6 +1579,14 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                 rec['validation_status'] = 'invalid'
                 rec['validation_error'] = 'Missing ticker'
                 invalid_count += 1
+                continue
+
+            inconsistency_error = _detect_rating_data_inconsistency(rec)
+            if inconsistency_error:
+                rec['validation_status'] = 'inconsistent_data'
+                rec['validation_error'] = inconsistency_error
+                invalid_count += 1
+                logger.info(f"Filtered {ticker}: {inconsistency_error}")
                 continue
             
             try:

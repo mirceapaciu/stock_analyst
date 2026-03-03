@@ -92,3 +92,79 @@ class TestValidateTickersNodeFiltering:
         rec = result["scraped_pages"][0]["stock_recommendations"][0]
         assert rec["validation_status"] == "validated"
         assert rec["stock_id"] == 1
+
+    def test_filters_recommendation_when_text_and_rating_conflict(self):
+        state = {
+            "query": "",
+            "search_results": [],
+            "filtered_search_results": [],
+            "expanded_search_results": [],
+            "scraped_pages": [
+                {
+                    "url": "https://example.com/article",
+                    "stock_recommendations": [
+                        {
+                            "ticker": "AAPL",
+                            "exchange": "NASDAQ",
+                            "stock_name": "Apple Inc.",
+                            "rating": 1,
+                            "price": "100",
+                            "fair_price": "120",
+                            "target_price": "N/A",
+                            "recommendation_text": "AAPL appears undervalued and offers an attractive discount.",
+                        }
+                    ],
+                }
+            ],
+            "status": "",
+            "error": "",
+        }
+
+        with patch("recommendations.workflow.RecommendationsDatabase", return_value=DummyRecommendationsDatabase()):
+            with patch("services.recommendations.lookup_stock") as mock_lookup_stock:
+                with patch("services.financial.get_or_create_stock_info") as mock_market_data:
+                    result = validate_tickers_node(state)
+
+        rec = result["scraped_pages"][0]["stock_recommendations"][0]
+        assert rec["validation_status"] == "inconsistent_data"
+        assert "undervaluation" in rec["validation_error"]
+        mock_lookup_stock.assert_not_called()
+        mock_market_data.assert_not_called()
+
+    def test_filters_recommendation_when_price_gap_conflicts_with_sell_rating(self):
+        state = {
+            "query": "",
+            "search_results": [],
+            "filtered_search_results": [],
+            "expanded_search_results": [],
+            "scraped_pages": [
+                {
+                    "url": "https://example.com/article",
+                    "stock_recommendations": [
+                        {
+                            "ticker": "AAPL",
+                            "exchange": "NASDAQ",
+                            "stock_name": "Apple Inc.",
+                            "rating": 1,
+                            "price": "264.72",
+                            "fair_price": "778",
+                            "target_price": "731",
+                            "recommendation_text": "AAPL is trading at a 46% premium and appears overvalued.",
+                        }
+                    ],
+                }
+            ],
+            "status": "",
+            "error": "",
+        }
+
+        with patch("recommendations.workflow.RecommendationsDatabase", return_value=DummyRecommendationsDatabase()):
+            with patch("services.recommendations.lookup_stock") as mock_lookup_stock:
+                with patch("services.financial.get_or_create_stock_info") as mock_market_data:
+                    result = validate_tickers_node(state)
+
+        rec = result["scraped_pages"][0]["stock_recommendations"][0]
+        assert rec["validation_status"] == "inconsistent_data"
+        assert "below fair/target value" in rec["validation_error"]
+        mock_lookup_stock.assert_not_called()
+        mock_market_data.assert_not_called()

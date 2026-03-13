@@ -33,6 +33,36 @@ services:
       retries: 3
       start_period: 40s
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock-analysis-scheduler
+    command: python scripts/scheduler.py
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_CSE_ID=${GOOGLE_CSE_ID}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - FMP_API_KEY=${FMP_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - DISCOVERY_INTERVAL_HOURS=${DISCOVERY_INTERVAL_HOURS:-24}
+      - CSE_DAILY_QUOTA=${CSE_DAILY_QUOTA:-100}
+      - TRACKED_BATCH_INTERVAL_HOURS=${TRACKED_BATCH_INTERVAL_HOURS:-8}
+      - TRACKED_BATCH_SIZE=${TRACKED_BATCH_SIZE:-27}
+      - TRACKED_BATCH_MIN_RATING=${TRACKED_BATCH_MIN_RATING:-4.0}
+      - TRACKED_RESULT_AGE_DAYS=${TRACKED_RESULT_AGE_DAYS:-20}
+      - SWEEP_STALE_DAYS=${SWEEP_STALE_DAYS:-14}
+      - TRACKED_BATCH_SEARCH_QUERIES=${TRACKED_BATCH_SEARCH_QUERIES:-{ticker} stock analysis}
+      - TRACKED_BATCH_SITES=${TRACKED_BATCH_SITES:-reuters.com,morningstar.com,finance.yahoo.com,fool.com,zacks.com,seekingalpha.com}
+    volumes:
+      - stock-db:/app/data/db
+      - stock-logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      stock-analysis:
+        condition: service_healthy
+
 volumes:
   stock-db:
   stock-logs:

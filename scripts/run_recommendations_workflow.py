@@ -46,12 +46,17 @@ def run_recommendations_workflow():
         
         # Initialize state
         initial_state = {
+            "query": "",
             "search_results": [],
+            "filtered_search_results": [],
             "expanded_search_results": [],
             "scraped_pages": [],
             "deduplicated_pages": [],
             "skipped_recommendations": [],
             "status": "Starting workflow",
+            "error": "",
+            "workflow_mode": "discovery",
+            "batch_tickers": [],
             "process_name": PROCESS_NAME  # Process name for progress tracking (nodes create their own DB connections)
         }
         

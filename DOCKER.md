@@ -29,17 +29,20 @@ FMP_API_KEY=...
 ### 2. Build and Run with Docker Compose
 
 ```bash
-# Build and start the container
+# Build and start the containers (UI + scheduler)
 docker-compose up -d
 
 # View logs
 docker-compose logs -f
 
-# Stop the container
+# View scheduler logs only
+docker-compose logs -f scheduler
+
+# Stop the containers
 docker-compose down
 ```
 
-The application will be available at: http://localhost:8080
+The Streamlit application will be available at: http://localhost:8080
 
 ### 3. Build and Run with Docker Only
 
@@ -100,7 +103,7 @@ The Docker image (`stock-analysis-app:latest`) must be available either:
 #### Starting the Deployment
 
 ```bash
-# Start using the deploy compose file
+# Start using the deploy compose file (UI + scheduler)
 docker-compose -f docker-compose-deploy.yml up -d
 
 # View logs
@@ -132,6 +135,15 @@ Optional:
 - `MAX_PE_RATIO` - Maximum P/E ratio filter (default: 15.0)
 - `MIN_MARKET_CAP` - Minimum market cap filter (default: 1000000000)
 - `APP_PASSWORD` - Application password (default: "")
+- `DISCOVERY_INTERVAL_HOURS` - Hours between discovery workflow runs (default: 24)
+- `TRACKED_BATCH_INTERVAL_HOURS` - Hours between tracked-stock batches (default: 8)
+- `TRACKED_BATCH_SIZE` - Number of tracked tickers per batch invocation (default: 27)
+- `TRACKED_BATCH_MIN_RATING` - Minimum rating for tracked sweep inclusion (default: 4.0)
+- `TRACKED_RESULT_AGE_DAYS` - Result age limit for tracked queries (default: 20)
+- `TRACKED_BATCH_SEARCH_QUERIES` - Tracked query templates, `|` separated (default: `{ticker} {stock_name} stock analysis`)
+- `TRACKED_BATCH_SITES` - Comma-separated sites used in tracked grouped query
+- `CSE_DAILY_QUOTA` - Daily Google CSE budget cap used by scheduler (default: 100)
+- `SWEEP_STALE_DAYS` - Rebuild tracked sweep after this many days (default: 14)
 
 ## Ports
 

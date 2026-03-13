@@ -19,9 +19,28 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from config import MAX_RESULT_AGE_DAYS, GOOGLE_API_KEY, GOOGLE_CSE_ID, MAX_SEARCH_RESULTS, SEARCH_QUERIES, MAX_WORKERS, MIN_MARKET_CAP, REPUTABLE_SITES
+from config import (
+    MAX_RESULT_AGE_DAYS,
+    GOOGLE_API_KEY,
+    GOOGLE_CSE_ID,
+    MAX_SEARCH_RESULTS,
+    SEARCH_QUERIES,
+    TRACKED_BATCH_SEARCH_QUERIES,
+    TRACKED_BATCH_SITES,
+    TRACKED_RESULT_AGE_DAYS,
+    MAX_WORKERS,
+    MIN_MARKET_CAP,
+    MIN_RATING_NEW_STOCK,
+    REPUTABLE_SITES,
+    build_tracked_query,
+)
 from repositories.recommendations_db import RecommendationsDatabase
-from recommendations.prompts import get_extract_stocks_prompt, get_analyze_search_result_prompt, get_analyze_search_result_with_date_prompt
+from recommendations.prompts import (
+    get_extract_stocks_prompt,
+    get_extract_stocks_prompt_tracked,
+    get_analyze_search_result_prompt,
+    get_analyze_search_result_with_date_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +140,9 @@ class WorkflowState(TypedDict):
     status: str
     error: str
     process_name: Optional[str]  # Process name for progress tracking
+    workflow_mode: Optional[str]  # discovery (default) | tracked
+    batch_tickers: Optional[List[str]]  # Tickers processed in tracked mode
+    batch_stock_names: Optional[Dict[str, str]]  # Optional ticker->stock name mapping
 
 
 def update_progress_if_available(state: WorkflowState, progress: int):
@@ -153,6 +175,49 @@ def get_search_queries() -> List[str]:
 
     return queries
 
+
+def get_tracked_batch_query_specs(
+    batch_tickers: List[str],
+    batch_stock_names: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, str]]:
+    """Generate grouped tracked-mode query specs for provided batch tickers."""
+    query_specs: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    normalized_stock_names: Dict[str, str] = {}
+
+    for ticker, stock_name in (batch_stock_names or {}).items():
+        normalized_ticker = str(ticker or "").strip().upper()
+        normalized_name = str(stock_name or "").strip()
+        if normalized_ticker and normalized_name:
+            normalized_stock_names[normalized_ticker] = normalized_name
+
+    for ticker in batch_tickers:
+        normalized_ticker = (ticker or '').strip().upper()
+        if not normalized_ticker:
+            continue
+
+        stock_name = normalized_stock_names.get(normalized_ticker, "")
+
+        for template in TRACKED_BATCH_SEARCH_QUERIES:
+            query = build_tracked_query(
+                normalized_ticker,
+                stock_name,
+                template,
+                TRACKED_BATCH_SITES,
+            )
+            dedupe_key = (query, normalized_ticker)
+            if dedupe_key in seen:
+                continue
+
+            seen.add(dedupe_key)
+            query_specs.append({
+                "query": query,
+                "tracked_ticker": normalized_ticker,
+            })
+
+    return query_specs
+
+
 def search_node(state: WorkflowState) -> WorkflowState:
     """Search for stock recommendations using Google Custom Search API."""
     update_progress_if_available(state, 30)
@@ -165,12 +230,120 @@ def search_node(state: WorkflowState) -> WorkflowState:
                 "error": "Missing Google API credentials"
             }
         
+        workflow_mode = str(state.get("workflow_mode") or "discovery").strip().lower()
+        if workflow_mode not in {"discovery", "tracked"}:
+            workflow_mode = "discovery"
+
         service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
         all_results = []
-        date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
-        
-        for query in get_search_queries():
+        result_index: dict[tuple[str, Optional[str]], int] = {}
+        cse_calls_made = 0
+
+        if workflow_mode == "tracked":
+            batch_tickers = []
+            seen_tickers = set()
+            for ticker in state.get("batch_tickers") or []:
+                normalized_ticker = str(ticker or "").strip().upper()
+                if not normalized_ticker or normalized_ticker in seen_tickers:
+                    continue
+                seen_tickers.add(normalized_ticker)
+                batch_tickers.append(normalized_ticker)
+
+            raw_batch_stock_names = state.get("batch_stock_names") or {}
+            batch_stock_names: Dict[str, str] = {}
+            if isinstance(raw_batch_stock_names, dict):
+                for ticker, stock_name in raw_batch_stock_names.items():
+                    normalized_ticker = str(ticker or "").strip().upper()
+                    normalized_name = str(stock_name or "").strip()
+                    if normalized_ticker and normalized_name:
+                        batch_stock_names[normalized_ticker] = normalized_name
+
+            query_specs: List[Dict[str, Optional[str]]] = [
+                {"query": spec["query"], "tracked_ticker": spec["tracked_ticker"]}
+                for spec in get_tracked_batch_query_specs(
+                    batch_tickers,
+                    batch_stock_names=batch_stock_names,
+                )
+            ]
+            date_restrict = f"d{TRACKED_RESULT_AGE_DAYS}"
+        else:
+            batch_tickers = []
+            query_specs = [{"query": query, "tracked_ticker": None} for query in get_search_queries()]
+            date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
+
+        def _upsert_result(item: Dict, tracked_ticker: Optional[str] = None):
+            date_value = None
+            pagemap = item.get('pagemap', {})
+            metatags = pagemap.get('metatags', [])
+            if metatags and len(metatags) > 0:
+                meta = metatags[0]
+                date_value = (
+                    meta.get('og:article:published_time') or
+                    meta.get('article:published_time') or
+                    meta.get('sailthru.date') or
+                    meta.get('og:article:modified_time') or
+                    meta.get('parsely-pub-date') or
+                    meta.get('datePublished') or
+                    meta.get('publishdate') or
+                    meta.get('date') or
+                    meta.get('last-modified') or
+                    meta.get('dc.date') or
+                    meta.get('pubdate') or
+                    meta.get('article:published')
+                )
+
+                if date_value:
+                    date_value = date_value.rstrip(';').strip()
+
+            normalized_date = None
+            if date_value:
+                try:
+                    date_str = date_value.replace('Z', '').split('T')[0]
+                    date_obj = datetime.fromisoformat(date_str)
+                    normalized_date = date_obj.strftime('%Y-%m-%d')
+                except Exception:
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        date_obj = parsedate_to_datetime(date_value)
+                        normalized_date = date_obj.strftime('%Y-%m-%d')
+                    except Exception:
+                        try:
+                            date_obj = datetime.strptime(date_value, '%a, %d %b %Y %H:%M:%S')
+                            normalized_date = date_obj.strftime('%Y-%m-%d')
+                        except Exception:
+                            pass
+
+            href = item.get('link', '')
+            result_key = (href, normalized_date)
+
+            if result_key in result_index:
+                existing = all_results[result_index[result_key]]
+                if tracked_ticker:
+                    existing['is_tracked_stock_search'] = True
+                    existing_tickers = existing.setdefault('tracked_tickers', [])
+                    if tracked_ticker not in existing_tickers:
+                        existing_tickers.append(tracked_ticker)
+                        existing['tracked_ticker'] = existing_tickers[0]
+                return
+
+            tracked_tickers = [tracked_ticker] if tracked_ticker else []
+            all_results.append({
+                'title': item.get('title', ''),
+                'href': href,
+                'body': item.get('snippet', ''),
+                'date': normalized_date,
+                'pagemap': pagemap,
+                'is_tracked_stock_search': bool(tracked_ticker),
+                'tracked_ticker': tracked_ticker,
+                'tracked_tickers': tracked_tickers,
+            })
+            result_index[result_key] = len(all_results) - 1
+
+        for query_spec in query_specs:
+            query = query_spec['query']
+            tracked_ticker = query_spec['tracked_ticker']
             try:
+                cse_calls_made += 1
                 result = service.cse().list(
                     q=query,
                     cx=GOOGLE_CSE_ID,
@@ -178,65 +351,43 @@ def search_node(state: WorkflowState) -> WorkflowState:
                     dateRestrict=date_restrict,
                     sort='date'
                 ).execute()
-                
+
                 if 'items' in result:
                     for item in result['items']:
-                        date_value = None
-                        pagemap = item.get('pagemap', {})
-                        metatags = pagemap.get('metatags', [])
-                        if metatags and len(metatags) > 0:
-                            meta = metatags[0]
-                            date_value = (
-                                meta.get('og:article:published_time') or
-                                meta.get('article:published_time') or
-                                meta.get('sailthru.date') or
-                                meta.get('og:article:modified_time') or
-                                meta.get('parsely-pub-date') or
-                                meta.get('datePublished') or
-                                meta.get('publishdate') or
-                                meta.get('date') or
-                                meta.get('last-modified') or
-                                meta.get('dc.date') or
-                                meta.get('pubdate') or
-                                meta.get('article:published')
-                            )
-                            
-                            if date_value:
-                                date_value = date_value.rstrip(';').strip()
-                        
-                        normalized_date = None
-                        if date_value:
-                            try:
-                                date_str = date_value.replace('Z', '').split('T')[0]
-                                date_obj = datetime.fromisoformat(date_str)
-                                normalized_date = date_obj.strftime('%Y-%m-%d')
-                            except Exception:
-                                try:
-                                    from email.utils import parsedate_to_datetime
-                                    date_obj = parsedate_to_datetime(date_value)
-                                    normalized_date = date_obj.strftime('%Y-%m-%d')
-                                except Exception:
-                                    try:
-                                        date_obj = datetime.strptime(date_value, '%a, %d %b %Y %H:%M:%S')
-                                        normalized_date = date_obj.strftime('%Y-%m-%d')
-                                    except Exception:
-                                        pass
-                        
-                        all_results.append({
-                            'title': item.get('title', ''),
-                            'href': item.get('link', ''),
-                            'body': item.get('snippet', ''),
-                            'date': normalized_date,
-                            'pagemap': pagemap,
-                        })
+                        _upsert_result(item, tracked_ticker=tracked_ticker)
             except Exception as e:
                 logger.error(f"Search query '{query}' failed: {e}")
                 continue
+
+        if cse_calls_made > 0:
+            try:
+                usage_db = RecommendationsDatabase()
+                usage_db.log_cse_usage(
+                    workflow_type="tracked_stock" if workflow_mode == "tracked" else "discovery",
+                    queries_count=cse_calls_made,
+                )
+            except Exception as usage_error:
+                logger.warning(f"Failed to log CSE usage: {usage_error}")
+
+        if workflow_mode == "tracked":
+            tracked_results_count = sum(1 for r in all_results if r.get('is_tracked_stock_search'))
+            status = (
+                f"Tracked mode: found {len(all_results)} results from {len(query_specs)} queries "
+                f"for {len(batch_tickers)} tickers (age <= {TRACKED_RESULT_AGE_DAYS} days, "
+                f"tracked results={tracked_results_count})"
+            )
+            if not query_specs:
+                status = "Tracked mode: no tickers provided for this batch"
+        else:
+            status = (
+                f"Found {len(all_results)} results from {len(query_specs)} queries "
+                f"(filtered by {MAX_RESULT_AGE_DAYS} days)"
+            )
         
         return {
             **state,
             "search_results": all_results,
-            "status": f"Found {len(all_results)} results (filtered by {MAX_RESULT_AGE_DAYS} days)",
+            "status": status,
             "error": ""
         }
 
@@ -331,7 +482,18 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
                 if not existing_date:
                     ex_date = parsed.get("excerpt_date")
             except Exception:
-                contains = any(w.lower() in (title + " " + body).lower() for w in ["undervalued", "undervalued stocks", "cheap stocks", "value picks"]) 
+                contains = any(
+                    w.lower() in (title + " " + body).lower()
+                    for w in [
+                        "undervalued",
+                        "undervalued stocks",
+                        "cheap stocks",
+                        "value picks",
+                        "stock analysis",
+                        "stock rating",
+                        "stock forecast",
+                    ]
+                )
                 if not existing_date:
                     ex_date = None
         except Exception:
@@ -347,7 +509,7 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
                 ex_date = None
 
         updated = dict(r)
-        updated["contains_stocks"] = contains
+        updated["contains_stocks"] = contains or bool(r.get("is_tracked_stock_search"))
         updated["excerpt_date"] = ex_date
         return updated
 
@@ -835,13 +997,17 @@ def extract_stock_recommendations_with_llm(
     url: str,
     title: str,
     page_text: str,
-    page_date: datetime
+    page_date: datetime,
+    tracked_tickers: Optional[List[str]] = None,
 ) -> List[Dict]:
     """Extract stock recommendations from page content using LLM."""
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(StockRecommendationsResponse)
-    
-    extraction_prompt = get_extract_stocks_prompt(url, title, page_text)
+
+    if tracked_tickers:
+        extraction_prompt = get_extract_stocks_prompt_tracked(url, title, page_text, tracked_tickers)
+    else:
+        extraction_prompt = get_extract_stocks_prompt(url, title, page_text)
 
     try:
         llm_response = structured_llm.invoke([HumanMessage(content=extraction_prompt)])
@@ -953,11 +1119,18 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
         webpage_title = search_result.get('title', '')
         webpage_date = page_date.strftime('%Y-%m-%d')
 
+        tracked_tickers = search_result.get('tracked_tickers') or []
+        if not tracked_tickers:
+            tracked_ticker = search_result.get('tracked_ticker')
+            if tracked_ticker:
+                tracked_tickers = [tracked_ticker]
+
         stock_recommendations = extract_stock_recommendations_with_llm(
             url=url,
             title=webpage_title,
             page_text=page_text,
-            page_date=page_date
+            page_date=page_date,
+            tracked_tickers=tracked_tickers,
         )
 
         result = {
@@ -966,7 +1139,9 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             'webpage_date': webpage_date,
             'page_text': page_text,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
-            'stock_recommendations': stock_recommendations
+            'stock_recommendations': stock_recommendations,
+            'is_tracked_stock_search': bool(search_result.get('is_tracked_stock_search')),
+            'tracked_tickers': tracked_tickers,
         }
         
         # Propagate expanded_from_url if present in search_result
@@ -1033,7 +1208,7 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
             use_browser = db.needs_browser_rendering(domain)
             
             try:
-                page_text, soup = fetch_webpage_content(parent_url, headers, use_browser=use_browser)
+                page_text, soup, _, _ = fetch_webpage_content(parent_url, headers, use_browser=use_browser)
             except Exception as e:
                 logger.warning(f"Failed to fetch {parent_url} for nested link extraction: {e}")
                 continue
@@ -1074,6 +1249,13 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
                         'expanded_from_url': parent_url,
                         'pagemap': {}
                     }
+                    if parent_result.get('is_tracked_stock_search'):
+                        nested_result['is_tracked_stock_search'] = True
+                    if parent_result.get('tracked_tickers'):
+                        nested_result['tracked_tickers'] = list(parent_result.get('tracked_tickers', []))
+                    elif parent_result.get('tracked_ticker'):
+                        nested_result['tracked_ticker'] = parent_result['tracked_ticker']
+                        nested_result['tracked_tickers'] = [parent_result['tracked_ticker']]
                     expanded_results.append(nested_result)
                     existing_urls.add(nested_url)
                     nested_links_found += 1
@@ -1555,10 +1737,21 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                 )
 
         return None
+
+    def _is_existing_stock(stock_id: int) -> bool:
+        has_recommended_stock = getattr(db, 'has_recommended_stock', None)
+        if not callable(has_recommended_stock):
+            return False
+        try:
+            return bool(has_recommended_stock(stock_id))
+        except Exception as e:
+            logger.warning(f"Unable to determine whether stock {stock_id} already exists in recommended_stock: {e}")
+            return False
     
     validated_count = 0
     enriched_count = 0
     invalid_count = 0
+    filtered_rating_count = 0
     
     for page in state.get("scraped_pages", []):
         for rec in page.get('stock_recommendations', []):
@@ -1698,6 +1891,27 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                 rec['stock_id'] = stock_info['id']
                 rec['marketCap'] = market_cap
                 rec['validation_status'] = 'validated'
+
+                rating_raw = rec.get('rating', 3)
+                try:
+                    rating_value = int(rating_raw)
+                except (TypeError, ValueError):
+                    rating_value = 3
+
+                is_existing_stock = _is_existing_stock(stock_info['id'])
+                if not is_existing_stock and rating_value < MIN_RATING_NEW_STOCK:
+                    rec['validation_status'] = 'filtered_rating'
+                    rec['validation_error'] = (
+                        f"Rating {rating_value} below threshold {MIN_RATING_NEW_STOCK} "
+                        "for new stock"
+                    )
+                    filtered_rating_count += 1
+                    invalid_count += 1
+                    logger.info(
+                        f"Filtered {ticker_upper}: rating {rating_value} < {MIN_RATING_NEW_STOCK} "
+                        "for new stock"
+                    )
+                    continue
                 
                 if original_exchange != stock_info['exchange'] or original_stock_name != stock_info['stock_name']:
                     enriched_count += 1
@@ -1713,6 +1927,8 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
     status_msg = f"Validated {validated_count} tickers"
     if enriched_count > 0:
         status_msg += f", enriched {enriched_count}"
+    if filtered_rating_count > 0:
+        status_msg += f", {filtered_rating_count} filtered by rating"
     if invalid_count > 0:
         status_msg += f", {invalid_count} invalid/not found"
     

@@ -139,7 +139,10 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
                     else:
                         return fallback_best_match
                 else:
-                    return fallback_best_match
+                    logger.info(
+                        f"Ignoring ticker-only DB fallback for {ticker} because no stock_name hint was provided "
+                        f"(requested exchange={exchange})."
+                    )
         
         # Not found in database - query FMP API
         logger.info(f"Stock {ticker} not found in DB, querying FMP API...")
@@ -226,25 +229,22 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
 
             # If we found ticker-base variants (e.g. BA and BA.L) but exchange filtered them out,
             # retry without exchange filter using best stock_name similarity.
-            if exchange and base_symbol_candidates:
+            if exchange and base_symbol_candidates and stock_name and stock_name != 'N/A':
                 logger.info(
                     f"Found {ticker} base-symbol candidates in FMP with exchange conflict "
                     f"(requested={exchange}). Retrying without exchange filter."
                 )
 
-                if stock_name and stock_name != 'N/A':
-                    from difflib import SequenceMatcher
+                from difflib import SequenceMatcher
 
-                    fallback_candidate = max(
-                        base_symbol_candidates,
-                        key=lambda candidate: SequenceMatcher(
-                            None,
-                            stock_name.lower(),
-                            (candidate.get('name') or '').lower()
-                        ).ratio()
-                    )
-                else:
-                    fallback_candidate = base_symbol_candidates[0]
+                fallback_candidate = max(
+                    base_symbol_candidates,
+                    key=lambda candidate: SequenceMatcher(
+                        None,
+                        stock_name.lower(),
+                        (candidate.get('name') or '').lower()
+                    ).ratio()
+                )
 
                 fallback_symbol = fallback_candidate.get('symbol', '')
                 fallback_name = fallback_candidate.get('name', '')
@@ -266,16 +266,13 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
                 fallback_inserted = db.find_stock_in_db(fallback_symbol, fallback_exchange)
                 if fallback_inserted:
                     selected = _select_best_match(fallback_inserted, stock_name)
-                    if stock_name and stock_name != 'N/A':
-                        similarity = _name_similarity(stock_name, selected.get('stock_name', ''))
-                        if similarity < 0.45:
-                            logger.info(
-                                f"Base-symbol fallback name mismatch for {ticker}: "
-                                f"input='{stock_name}' selected='{selected.get('stock_name', '')}' similarity={similarity:.2f}. "
-                                "Continuing with name-based fallback."
-                            )
-                        else:
-                            return selected
+                    similarity = _name_similarity(stock_name, selected.get('stock_name', ''))
+                    if similarity < 0.45:
+                        logger.info(
+                            f"Base-symbol fallback name mismatch for {ticker}: "
+                            f"input='{stock_name}' selected='{selected.get('stock_name', '')}' similarity={similarity:.2f}. "
+                            "Continuing with name-based fallback."
+                        )
                     else:
                         return selected
 
@@ -371,25 +368,22 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
 
             # Fallback: symbol exists in FMP but exchange did not match requested one.
             # Retry without exchange filtering and choose best approximate name match.
-            if exchange and exact_symbol_candidates:
+            if exchange and exact_symbol_candidates and stock_name and stock_name != 'N/A':
                 logger.info(
                     f"Found {ticker} in FMP with exchange conflict (requested={exchange}). "
                     "Retrying without exchange filter."
                 )
 
-                if stock_name and stock_name != 'N/A':
-                    from difflib import SequenceMatcher
+                from difflib import SequenceMatcher
 
-                    fallback_candidate = max(
-                        exact_symbol_candidates,
-                        key=lambda candidate: SequenceMatcher(
-                            None,
-                            stock_name.lower(),
-                            (candidate.get('name') or '').lower()
-                        ).ratio()
-                    )
-                else:
-                    fallback_candidate = exact_symbol_candidates[0]
+                fallback_candidate = max(
+                    exact_symbol_candidates,
+                    key=lambda candidate: SequenceMatcher(
+                        None,
+                        stock_name.lower(),
+                        (candidate.get('name') or '').lower()
+                    ).ratio()
+                )
 
                 fallback_symbol = fallback_candidate.get('symbol', '')
                 fallback_name = fallback_candidate.get('name', '')
@@ -411,16 +405,13 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
                 fallback_inserted = db.find_stock_in_db(fallback_symbol, fallback_exchange)
                 if fallback_inserted:
                     selected = _select_best_match(fallback_inserted, stock_name)
-                    if stock_name and stock_name != 'N/A':
-                        similarity = _name_similarity(stock_name, selected.get('stock_name', ''))
-                        if similarity < 0.45:
-                            logger.info(
-                                f"Exact-symbol fallback name mismatch for {ticker}: "
-                                f"input='{stock_name}' selected='{selected.get('stock_name', '')}' similarity={similarity:.2f}. "
-                                "Continuing with name-based fallback."
-                            )
-                        else:
-                            return selected
+                    similarity = _name_similarity(stock_name, selected.get('stock_name', ''))
+                    if similarity < 0.45:
+                        logger.info(
+                            f"Exact-symbol fallback name mismatch for {ticker}: "
+                            f"input='{stock_name}' selected='{selected.get('stock_name', '')}' similarity={similarity:.2f}. "
+                            "Continuing with name-based fallback."
+                        )
                     else:
                         return selected
             

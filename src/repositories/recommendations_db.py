@@ -2,16 +2,52 @@
 
 import sqlite3
 import csv
+import json
 import logging
 import os
-from typing import List, Dict
-from datetime import date, timedelta
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+from datetime import date, timedelta, datetime
 from pathlib import Path
 import time
-from config import RECOMMENDATIONS_DB_PATH, FINNHUB_API_KEY, RECOMMENDATION_LOOKBACK_MONTHS
+from config import (
+    RECOMMENDATIONS_DB_PATH,
+    FINNHUB_API_KEY,
+    RECOMMENDATION_LOOKBACK_MONTHS,
+    TRACKED_BATCH_SIZE,
+)
 from utils.s3_storage import get_s3_storage
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BatchSweep:
+    """Represents persisted sweep state for tracked-stock batch processing."""
+
+    workflow_type: str
+    ticker_list: List[str]
+    batch_index: int
+    total_batches: int
+    batch_size: int
+    sweep_started_at: Optional[str] = None
+    last_batch_at: Optional[str] = None
+    last_batch_status: Optional[str] = None
+    sweep_completed_at: Optional[str] = None
+
+    def next_batch(self, batch_size: Optional[int] = None) -> List[str]:
+        """Return the next ticker slice using the persisted cursor."""
+        size = max(1, int(batch_size or self.batch_size or 1))
+        start = max(0, int(self.batch_index or 0))
+        end = start + size
+        return self.ticker_list[start:end]
+
+    def next_batch_number(self, batch_size: Optional[int] = None) -> int:
+        """Return 1-based batch sequence number for reporting."""
+        if not self.ticker_list:
+            return 0
+        size = max(1, int(batch_size or self.batch_size or 1))
+        return (max(0, int(self.batch_index or 0)) // size) + 1
 
 
 class RecommendationsDatabase:
@@ -233,6 +269,34 @@ class RecommendationsDatabase:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS batch_schedule (
+                workflow_type VARCHAR(50) PRIMARY KEY,
+                ticker_list TEXT NOT NULL DEFAULT '[]',
+                batch_index INTEGER NOT NULL DEFAULT 0,
+                total_batches INTEGER NOT NULL DEFAULT 0,
+                sweep_started_at TIMESTAMP,
+                last_batch_at TIMESTAMP,
+                last_batch_status VARCHAR(20),
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                sweep_completed_at TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cse_usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_date DATE NOT NULL,
+                workflow_type VARCHAR(50) NOT NULL,
+                queries_count INTEGER NOT NULL,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cse_usage_date ON cse_usage_log(query_date)"
+        )
+
         # Populate ref_stock_rating table if empty
         cursor.execute("SELECT COUNT(*) FROM ref_stock_rating")
         if cursor.fetchone()[0] == 0:
@@ -269,6 +333,9 @@ class RecommendationsDatabase:
         
         # Migration: Add fair_price_dcf column to recommended_stock if it doesn't exist
         self._add_fair_price_dcf_column_if_missing()
+
+        # Migration: Add consecutive_failures column to batch_schedule if it doesn't exist
+        self._add_batch_schedule_consecutive_failures_if_missing()
         
         # Migration: Remove fair_price_dcf column from favorite_stock if it exists (moved to recommended_stock)
         self._remove_fair_price_dcf_from_favorite_stock_if_exists()
@@ -375,6 +442,23 @@ class RecommendationsDatabase:
             conn.commit()
             logger.info("Added fair_price_dcf column to recommended_stock table")
         
+        conn.close()
+
+    def _add_batch_schedule_consecutive_failures_if_missing(self):
+        """Add consecutive_failures column to batch_schedule if missing."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(batch_schedule)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'consecutive_failures' not in columns:
+            cursor.execute(
+                "ALTER TABLE batch_schedule ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+            logger.info("Added consecutive_failures column to batch_schedule table")
+
         conn.close()
     
     def _remove_fair_price_dcf_from_favorite_stock_if_exists(self):
@@ -857,6 +941,352 @@ class RecommendationsDatabase:
         conn.close()
         
         return [dict(row) for row in results]
+
+    def has_recommended_stock(self, stock_id: int) -> bool:
+        """Return True when a stock already exists in recommended_stock."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT 1 FROM recommended_stock WHERE stock_id = ? LIMIT 1",
+            (stock_id,)
+        )
+        exists = cursor.fetchone() is not None
+        conn.close()
+
+        return exists
+
+    def get_tracked_tickers(self, limit: int = 0) -> List[str]:
+        """Return ticker symbols that are already tracked in recommended_stock.
+
+        Args:
+            limit: Optional max number of tickers to return. 0 means no limit.
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        query = """
+            SELECT DISTINCT s.ticker
+            FROM recommended_stock rs
+            JOIN stock s ON rs.stock_id = s.id
+            WHERE s.ticker IS NOT NULL AND TRIM(s.ticker) <> ''
+            ORDER BY rs.last_analysis_date DESC, rs.stock_id DESC
+        """
+
+        if limit and limit > 0:
+            cursor.execute(query + " LIMIT ?", (limit,))
+        else:
+            cursor.execute(query)
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [str(row["ticker"]).strip().upper() for row in rows if row["ticker"]]
+
+    def get_tracked_tickers_by_min_rating(self, min_rating: float = 4.0) -> List[str]:
+        """Return tracked tickers with rating >= min_rating ordered by staleness."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT DISTINCT s.ticker
+            FROM recommended_stock rs
+            JOIN stock s ON rs.stock_id = s.id
+            WHERE rs.rating >= ?
+              AND s.ticker IS NOT NULL
+              AND TRIM(s.ticker) <> ''
+            ORDER BY COALESCE(rs.last_analysis_date, '1970-01-01') ASC, s.ticker ASC
+            """,
+            (min_rating,),
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [str(row["ticker"]).strip().upper() for row in rows if row["ticker"]]
+
+    @staticmethod
+    def _normalize_ticker_list(raw_tickers: List[str]) -> List[str]:
+        """Normalize and deduplicate ticker list while preserving order."""
+        normalized: List[str] = []
+        seen = set()
+
+        for ticker in raw_tickers:
+            value = str(ticker or '').strip().upper()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+
+        return normalized
+
+    @staticmethod
+    def _parse_sqlite_timestamp(timestamp_value: Optional[str]) -> Optional[datetime]:
+        """Parse SQLite timestamp strings into datetime objects."""
+        if not timestamp_value:
+            return None
+
+        raw_value = str(timestamp_value).strip()
+        if not raw_value:
+            return None
+
+        try:
+            return datetime.fromisoformat(raw_value)
+        except ValueError:
+            pass
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw_value, fmt)
+            except ValueError:
+                continue
+
+        return None
+
+    def _start_new_sweep(self, workflow_type: str, min_rating: float, batch_size: int) -> BatchSweep:
+        """Create or replace a sweep definition for the given workflow."""
+        ticker_list = self._normalize_ticker_list(
+            self.get_tracked_tickers_by_min_rating(min_rating=min_rating)
+        )
+        total_batches = (len(ticker_list) + batch_size - 1) // batch_size if ticker_list else 0
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO batch_schedule (
+                workflow_type,
+                ticker_list,
+                batch_index,
+                total_batches,
+                sweep_started_at,
+                last_batch_at,
+                last_batch_status,
+                consecutive_failures,
+                sweep_completed_at
+            )
+            VALUES (?, ?, 0, ?, datetime('now'), NULL, NULL, 0, NULL)
+            ON CONFLICT(workflow_type) DO UPDATE SET
+                ticker_list = excluded.ticker_list,
+                batch_index = 0,
+                total_batches = excluded.total_batches,
+                sweep_started_at = datetime('now'),
+                last_batch_at = NULL,
+                last_batch_status = NULL,
+                consecutive_failures = 0,
+                sweep_completed_at = NULL
+            """,
+            (workflow_type, json.dumps(ticker_list), total_batches),
+        )
+
+        conn.commit()
+        conn.close()
+
+        return BatchSweep(
+            workflow_type=workflow_type,
+            ticker_list=ticker_list,
+            batch_index=0,
+            total_batches=total_batches,
+            batch_size=batch_size,
+            sweep_started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def get_or_start_sweep(self, workflow_type: str, min_rating: float, stale_days: int) -> BatchSweep:
+        """Load current sweep state or start a new one if complete/missing/stale."""
+        batch_size = max(1, TRACKED_BATCH_SIZE)
+
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT workflow_type, ticker_list, batch_index, total_batches,
+                     sweep_started_at, last_batch_at, last_batch_status,
+                     consecutive_failures, sweep_completed_at
+            FROM batch_schedule
+            WHERE workflow_type = ?
+            """,
+            (workflow_type,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return self._start_new_sweep(
+                workflow_type=workflow_type,
+                min_rating=min_rating,
+                batch_size=batch_size,
+            )
+
+        try:
+            ticker_list = self._normalize_ticker_list(json.loads(row["ticker_list"] or "[]"))
+        except Exception:
+            ticker_list = []
+
+        batch_index = max(0, int(row["batch_index"] or 0))
+        total_batches = int(row["total_batches"] or 0)
+        sweep_completed_at = row["sweep_completed_at"]
+        sweep_started_at = row["sweep_started_at"]
+
+        should_refresh = False
+
+        if sweep_completed_at:
+            should_refresh = True
+        elif batch_index >= len(ticker_list):
+            should_refresh = True
+        elif stale_days > 0:
+            started_dt = self._parse_sqlite_timestamp(sweep_started_at)
+            if started_dt and datetime.now() - started_dt >= timedelta(days=stale_days):
+                should_refresh = True
+
+        if should_refresh:
+            return self._start_new_sweep(
+                workflow_type=workflow_type,
+                min_rating=min_rating,
+                batch_size=batch_size,
+            )
+
+        if total_batches <= 0:
+            total_batches = (len(ticker_list) + batch_size - 1) // batch_size if ticker_list else 0
+
+        return BatchSweep(
+            workflow_type=workflow_type,
+            ticker_list=ticker_list,
+            batch_index=batch_index,
+            total_batches=total_batches,
+            batch_size=batch_size,
+            sweep_started_at=sweep_started_at,
+            last_batch_at=row["last_batch_at"],
+            last_batch_status=row["last_batch_status"],
+            sweep_completed_at=sweep_completed_at,
+        )
+
+    def advance_sweep(
+        self,
+        workflow_type: str,
+        processed_tickers: List[str],
+        status: str = "COMPLETED",
+    ) -> None:
+        """Advance sweep cursor by processed ticker count or mark batch failure."""
+        normalized_status = (status or "COMPLETED").strip().upper()
+        if normalized_status not in {"COMPLETED", "FAILED"}:
+            normalized_status = "COMPLETED"
+
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT ticker_list, batch_index, consecutive_failures
+            FROM batch_schedule
+            WHERE workflow_type = ?
+            """,
+            (workflow_type,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return
+
+        try:
+            ticker_list = self._normalize_ticker_list(json.loads(row["ticker_list"] or "[]"))
+        except Exception:
+            ticker_list = []
+
+        cursor_position = max(0, int(row["batch_index"] or 0))
+        consecutive_failures = max(0, int(row["consecutive_failures"] or 0))
+
+        if normalized_status == "COMPLETED":
+            cursor_position += len(processed_tickers or [])
+            consecutive_failures = 0
+        elif normalized_status == "FAILED":
+            consecutive_failures += 1
+
+        total_tickers = len(ticker_list)
+
+        if normalized_status == "FAILED" and consecutive_failures >= 3:
+            skip_size = max(1, TRACKED_BATCH_SIZE)
+            cursor_position += skip_size
+            normalized_status = "FAILED_SKIPPED"
+            consecutive_failures = 0
+
+        cursor_position = min(cursor_position, total_tickers)
+        batch_size = max(1, TRACKED_BATCH_SIZE)
+        total_batches = (total_tickers + batch_size - 1) // batch_size if total_tickers else 0
+
+        sweep_completed_at = None
+        if normalized_status in {"COMPLETED", "FAILED_SKIPPED"} and (
+            total_tickers == 0 or cursor_position >= total_tickers
+        ):
+            sweep_completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            """
+            UPDATE batch_schedule
+            SET batch_index = ?,
+                total_batches = ?,
+                last_batch_at = datetime('now'),
+                last_batch_status = ?,
+                consecutive_failures = ?,
+                sweep_completed_at = ?
+            WHERE workflow_type = ?
+            """,
+            (
+                cursor_position,
+                total_batches,
+                normalized_status,
+                consecutive_failures,
+                sweep_completed_at,
+                workflow_type,
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+
+    def log_cse_usage(self, workflow_type: str, queries_count: int) -> None:
+        """Log Google CSE usage for the current UTC day."""
+        if queries_count <= 0:
+            return
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO cse_usage_log (query_date, workflow_type, queries_count)
+            VALUES (date('now'), ?, ?)
+            """,
+            (workflow_type, int(queries_count)),
+        )
+
+        conn.commit()
+        conn.close()
+
+    def get_cse_calls_today(self) -> int:
+        """Return total CSE calls logged for the current UTC day."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(queries_count), 0)
+            FROM cse_usage_log
+            WHERE query_date = date('now')
+            """
+        )
+
+        value = cursor.fetchone()[0]
+        conn.close()
+
+        return int(value or 0)
     
     def upsert_recommended_stock_from_input(self, stock_id: int = None) -> int:
         """Upsert recommended_stock table from recent input_stock_recommendation rows.

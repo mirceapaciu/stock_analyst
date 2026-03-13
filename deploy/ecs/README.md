@@ -92,6 +92,27 @@ aws ecs register-task-definition \
 ### 7. ECS Console
 ECS console URL: https://eu-central-1.console.aws.amazon.com/ecs/v2/clusters?region=eu-central-1
 
+### 7.1 Optional: Schedule Discovery and Tracked Batches
+
+You can run both workflows with EventBridge Scheduled Tasks using command overrides:
+
+- Daily discovery task command:
+
+```json
+["python", "scripts/run_recommendations_workflow.py"]
+```
+
+- Every 8 hours tracked batch task command:
+
+```json
+["python", "scripts/run_tracked_stock_batch.py"]
+```
+
+Recommended schedule pattern:
+
+- Discovery: once daily at `06:00` UTC
+- Tracked batch: every `8` hours
+
 ### 8. Stop the container
 
 #### Option 1: Using the AWS Management Console

@@ -58,6 +58,66 @@ Extract these fields:
             - 3: Detailed (comprehensive analysis with multiple arguments)"""
 
 
+def get_extract_stocks_prompt_tracked(url: str, title: str, page_text: str, tracked_tickers: list[str]) -> str:
+    tracked_tickers_text = ", ".join(tracked_tickers) if tracked_tickers else "N/A"
+
+    return f"""Extract stock recommendations from this article.
+IMPORTANT RULES:
+- ONLY extract stocks that are EXPLICITLY mentioned in the content
+- If NO stocks are mentioned, return an empty tickers array
+- DO NOT invent or hallucinate any stock information
+- Focus on these tracked tickers when present: {tracked_tickers_text}
+- Extract recommendations/ratings regardless of sentiment (Buy/Hold/Sell all allowed)
+- Do not extract stocks that are merely mentioned without a clear recommendation or rating context
+- Extract only values that are explicitly stated in the content
+
+RATING EXTRACTION RULES (PRIORITY ORDER):
+1. FIRST PRIORITY - Look for "Morningstar Rating" field with star symbols (★ or \u2605):
+    * Count the stars EXACTLY - this is the official rating
+    * Return the count as a NUMBER: 5 stars = 5, 4 stars = 4, 3 stars = 3, 2 stars = 2, 1 star = 1
+    * IMPORTANT: Use this numeric rating even if other language in the article sounds positive or negative
+
+2. SECOND PRIORITY - If no Morningstar stars found, look for explicit rating text:
+    * Convert text to numbers: "Strong Buy" = 5, "Buy" = 4, "Hold" = 3, "Sell" = 2, "Strong Sell" = 1
+
+3. FALLBACK ONLY - If neither stars nor explicit rating found, infer from sentiment:
+    * 5 - Very positive language, words like "excellent opportunity", "highly undervalued"
+    * 4 - Positive language, words like "undervalued", "attractive", "good opportunity"
+    * 3 - Neutral or mixed signals, or when only factual information is provided
+    * 2 - Negative language, concerns about valuation or performance
+    * 1 - Very negative language
+    * Default to 3 if sentiment is unclear
+
+CRITICAL: Always use the Morningstar star count if present, regardless of other positive/negative language in the article.
+
+URL: {url}
+Title: {title}
+Content: {page_text}
+
+Extract these fields:
+- analysis_date: Date of analysis (YYYY-MM-DD format). If not found in content, return "N/A".
+- tickers: Array of stock recommendations, where each item contains:
+     - ticker: Stock ticker symbol (e.g., AAPL)
+     - exchange: Exchange code (e.g., NASDAQ, NYSE), but ONLY if explicitly present in the content. If exchange is not explicitly stated, return "N/A".
+     - currency: Ticker/valuation currency code (e.g., USD, EUR, GBP, GBX). ONLY return a value if explicitly present in the content; otherwise return "N/A".
+     - stock_name: Company name
+     - rating: Recommendation rating as a NUMBER from 1 to 5, where 1=Strong Sell, 2=Sell, 3=Hold, 4=Buy, 5=Strong Buy. Follow priority order above.
+     - price: Current stock price (number only, or "N/A")
+     - fair_price: Fair/intrinsic value estimate (number only, or "N/A")
+     - target_price: Price target (number only, or "N/A")
+     - price_growth_forecast_pct: Expected growth percentage (number only, or "N/A")
+     - pe: P/E ratio (number only, or "N/A")
+     - recommendation_text: Brief summary of why this stock is recommended (max 500 chars)
+     - quality: Quality assessment object containing:
+          * description_word_count: Count the words in the stock description/analysis text (integer)
+          * has_explicit_rating: Does the text contain an explicit rating (Strong Buy/Buy/Hold/Sell/Strong Sell or star rating)? (true/false)
+          * reasoning_detail_level: How detailed is the reasoning? Use integer 0-3:
+                - 0: No reasoning provided
+                - 1: Brief (1-2 sentence explanation)
+                - 2: Moderate (multiple points or a paragraph)
+                - 3: Detailed (comprehensive analysis with multiple arguments)"""
+
+
 def get_analyze_search_result_prompt(title: str, href: str, body: str) -> str:
     """Prompt for analyzing if search result contains stock recommendations."""
     return f"""Examine this search result and answer in JSON with key 'contains_stocks' (true/false).

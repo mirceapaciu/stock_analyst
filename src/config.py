@@ -4,6 +4,7 @@ General Application Configuration
 
 import os
 from pathlib import Path
+from typing import List
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -39,6 +40,7 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # Custom Search Engine ID
 # Search settings
 MAX_SEARCH_RESULTS = 10 # Maximum results to fetch per query. Note Google CSE limits to 10 per request.
 MAX_RESULT_AGE_DAYS = 20  # Filter results older than this
+CSE_DAILY_QUOTA = max(1, int(os.getenv("CSE_DAILY_QUOTA", "100")))
 
 # Search query templates.
 # Use {year}, {month}, and {site} placeholders for dynamic values.
@@ -60,6 +62,61 @@ REPUTABLE_SITES = [
     "seekingalpha.com"
 ]
 
+# Tracked stock batch search settings (used by scheduler-driven tracked workflow).
+TRACKED_BATCH_SIZE = max(1, int(os.getenv("TRACKED_BATCH_SIZE", "27")))
+TRACKED_BATCH_MIN_RATING = min(5.0, max(1.0, float(os.getenv("TRACKED_BATCH_MIN_RATING", "4.0"))))
+TRACKED_BATCH_INTERVAL_HOURS = max(1, int(os.getenv("TRACKED_BATCH_INTERVAL_HOURS", "8")))
+TRACKED_RESULT_AGE_DAYS = max(1, int(os.getenv("TRACKED_RESULT_AGE_DAYS", str(MAX_RESULT_AGE_DAYS))))
+DISCOVERY_INTERVAL_HOURS = max(
+    1,
+    int(os.getenv("DISCOVERY_INTERVAL_HOURS", "72")),  # Default to every 3 days for discovery workflow
+)
+SWEEP_STALE_DAYS = max(1, int(os.getenv("SWEEP_STALE_DAYS", "14")))
+
+TRACKED_BATCH_SITES = [
+    s.strip() for s in os.getenv("TRACKED_BATCH_SITES", ",".join(REPUTABLE_SITES)).split(",") if s.strip()
+] or list(REPUTABLE_SITES)
+
+# Delimiter is '|', to avoid conflicts with comma-separated site lists.
+TRACKED_BATCH_SEARCH_QUERIES = [
+    q.strip() for q in os.getenv("TRACKED_BATCH_SEARCH_QUERIES", "{ticker} {stock_name} stock analysis").split("|") if q.strip()
+] or ["{ticker} {stock_name} stock analysis"]
+
+
+def build_tracked_query(ticker: str, stock_name: str, template: str, sites: List[str]) -> str:
+    """Build one CSE query that targets multiple sites via OR filters.
+
+    Ensures tracked queries include both ticker and stock name when available.
+    """
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_stock_name = " ".join(str(stock_name or "").split())
+
+    base_query = template.replace("{ticker}", normalized_ticker)
+    base_query = base_query.replace(
+        "{stock_name}",
+        f'"{normalized_stock_name}"' if normalized_stock_name else "",
+    )
+    base_query = " ".join(base_query.split())
+
+    if normalized_stock_name:
+        if normalized_ticker and normalized_ticker not in base_query:
+            base_query = f"{normalized_ticker} {base_query}".strip()
+        if normalized_stock_name.lower() not in base_query.lower():
+            base_query = f'"{normalized_stock_name}" {base_query}'.strip()
+
+    site_filter = " OR ".join(f"site:{site}" for site in sites if site)
+    if not site_filter:
+        return base_query
+    return f"{base_query} ({site_filter})"
+
+
+# Legacy tracked-search settings retained for backwards compatibility.
+TRACKED_STOCK_SEARCH_QUERIES = [
+    "{ticker} stock analysis site:{site}",
+    "{ticker} stock rating site:{site}",
+]
+MAX_TRACKED_STOCK_SEARCHES = max(0, int(os.getenv("MAX_TRACKED_STOCK_SEARCHES", "20")))
+
 # API Keys
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
@@ -70,6 +127,9 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 # Filter settings
 MAX_PE_RATIO = float(os.getenv("MAX_PE_RATIO", "15.0"))
 MIN_MARKET_CAP = float(os.getenv("MIN_MARKET_CAP", "1000000000"))  # $1B
+
+# New stocks (not in recommended_stock) must meet this minimum rating to be persisted.
+MIN_RATING_NEW_STOCK = min(5, max(1, int(os.getenv("MIN_RATING_NEW_STOCK", "4"))))
 
 # Thread pool settings
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))

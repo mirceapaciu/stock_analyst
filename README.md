@@ -65,6 +65,37 @@ For a detailed user guide please refer to [docs/USER_GUIDE.md](docs/USER_GUIDE.m
 4. **Run tests**: `uv run python scripts/run_tests.py unit`
 5. **Run the application**: `uv run streamlit run ./src/ui/main_app.py`
 
+## Scheduled Workflow Runs
+
+The recommendation pipeline now supports two independent schedules:
+
+- Discovery workflow: run every N hours for new stock discovery
+- Tracked-stock workflow: batch refresh runs every N hours
+
+Run one tracked batch manually:
+
+```bash
+uv run python scripts/run_tracked_stock_batch.py
+```
+
+Run both schedules in-process with APScheduler:
+
+```bash
+uv run python scripts/scheduler.py
+```
+
+Relevant environment variables:
+
+- `DISCOVERY_INTERVAL_HOURS` (default `72`)
+- `TRACKED_BATCH_INTERVAL_HOURS` (default `8`)
+- `TRACKED_BATCH_SIZE` (default `27`)
+- `TRACKED_BATCH_MIN_RATING` (default `4.0`)
+- `TRACKED_BATCH_SEARCH_QUERIES` (default `{ticker} {stock_name} stock analysis`)
+- `TRACKED_BATCH_SITES` (defaults to reputable finance sites)
+- `TRACKED_RESULT_AGE_DAYS` (default `20`)
+- `CSE_DAILY_QUOTA` (default `100`)
+- `SWEEP_STALE_DAYS` (default `14`)
+
 ## Testing
 
 The project includes two types of tests:

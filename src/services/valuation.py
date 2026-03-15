@@ -3,7 +3,7 @@ Stock Valuation Module using Discounted Cash Flow (DCF) Analysis
 """
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any, Union, Tuple
 import sys
 import os
 import logging
@@ -440,98 +440,181 @@ def get_fcf_outliers(
     return outlier_dates
 
 
-def calculate_historical_fcf_growth_rates(
-    fcf_dates: List[str], fcf_values: List[float]
-) -> Dict[str, any]:
-    """
-    Calculate FCF growth rates based on historical data.
-    
-    Args:
-        fcf_dates: List of dates corresponding to historical FCF values
-        fcf_values: List of historical Free Cash Flow values
-    
-    Returns:
-        Dict containing:
-            - growth_rates: List of year-over-year growth rates
-            - average_growth: Average historical growth rate
-            - median_growth: Median historical growth rate
-            - cagr: Compound Annual Growth Rate
-    """
+def _extract_historical_fcf_from_cashflow(
+    ticker: str,
+    years_of_history: int = DEFAULT_HISTORICAL_YEARS,
+) -> Tuple[List[str], List[float]]:
+    """Extract historical FCF values directly from cash flow statements."""
+    statements = get_financial_statements(ticker, statement_type='cashflow')
+    cash_flow = statements.get('cashflow')
 
-    outliers_dates = get_fcf_outliers(fcf_dates, fcf_values)
+    if cash_flow is None or cash_flow.empty:
+        raise ValueError(f"No cash flow data available for {ticker}")
+
+    max_points = max(1, int(years_of_history))
+    selected_dates: List[str] = []
+    selected_values: List[float] = []
+
+    for i in range(min(len(cash_flow.columns), max_points)):
+        date_value = cash_flow.columns[i]
+
+        if 'Free Cash Flow' in cash_flow.index:
+            fcf = cash_flow.loc['Free Cash Flow'].iloc[i]
+        else:
+            operating_cf = (
+                cash_flow.loc['Operating Cash Flow'].iloc[i]
+                if 'Operating Cash Flow' in cash_flow.index
+                else 0
+            )
+
+            if 'Capital Expenditure' in cash_flow.index:
+                capex = cash_flow.loc['Capital Expenditure'].iloc[i]
+            elif 'Capital Expenditures' in cash_flow.index:
+                capex = cash_flow.loc['Capital Expenditures'].iloc[i]
+            else:
+                capex = 0
+
+            fcf = operating_cf + capex
+
+        if pd.notna(fcf):
+            selected_dates.append(str(date_value))
+            selected_values.append(float(fcf))
+
+    return selected_dates, selected_values
+
+
+def _is_descending_time_order(fcf_dates: List[str]) -> bool:
+    """Infer whether supplied dates are in descending order (newest -> oldest)."""
+    if len(fcf_dates) < 2:
+        return False
+
+    parsed = pd.to_datetime(pd.Series([fcf_dates[0], fcf_dates[-1]]), errors='coerce')
+    if parsed.isna().any():
+        return False
+
+    return bool(parsed.iloc[0] > parsed.iloc[1])
+
+
+def calculate_historical_fcf_growth_rates(
+    fcf_dates_or_ticker: Union[List[str], str],
+    fcf_values: Optional[List[float]] = None,
+    years_of_history: int = DEFAULT_HISTORICAL_YEARS,
+) -> Dict[str, Any]:
+    """Calculate historical FCF growth rates.
+
+    Supported call styles:
+    1. calculate_historical_fcf_growth_rates(fcf_dates, fcf_values)
+    2. calculate_historical_fcf_growth_rates(ticker, years_of_history=5)
+    """
+    ticker: Optional[str] = None
+
+    if isinstance(fcf_dates_or_ticker, str):
+        ticker = fcf_dates_or_ticker.strip().upper()
+        fcf_dates, historical_fcf = _extract_historical_fcf_from_cashflow(
+            ticker,
+            years_of_history=years_of_history,
+        )
+    else:
+        if fcf_values is None:
+            raise ValueError("fcf_values is required when fcf_dates are provided directly")
+
+        pairs = [
+            (str(date_value), float(value))
+            for date_value, value in zip(fcf_dates_or_ticker, fcf_values)
+            if pd.notna(value)
+        ]
+        fcf_dates = [date_value for date_value, _ in pairs]
+        historical_fcf = [value for _, value in pairs]
+
+    outliers_dates = get_fcf_outliers(fcf_dates, historical_fcf)
+    outliers_dates_set = set(outliers_dates)
     fcf_growth_notes = []
-    
+
     # Document historical FCF data
     fcf_growth_notes.append("Historical FCF Data:")
-    for date, value in zip(fcf_dates, fcf_values):
-        is_outlier = " (OUTLIER)" if date in outliers_dates else ""
-        fcf_growth_notes.append(f"  {date}: {value:,.0f}{is_outlier}")
+    for date_value, value in zip(fcf_dates, historical_fcf):
+        is_outlier = " (OUTLIER)" if date_value in outliers_dates_set else ""
+        fcf_growth_notes.append(f"  {date_value}: {value:,.0f}{is_outlier}")
 
     if outliers_dates:
         fcf_growth_notes.append(f"\nOutlier Detection: {len(outliers_dates)} outlier(s) detected using IQR method")
         logger.info(f"Outliers detected at {outliers_dates} - will use filtered data for aggregate metrics")
-    
-    # Calculate year-over-year growth rates using ALL data (including outliers)
-    # to preserve temporal sequence integrity
+
+    is_descending = _is_descending_time_order(fcf_dates)
+
+    # Calculate year-over-year growth rates using all data points in the supplied order.
     fcf_growth_notes.append("\nYear-over-Year Growth Rates (calculated from all data):")
     growth_rates = []
-    for i in range(len(fcf_values) - 1):
-        older_fcf = fcf_values[i]      # Older (earlier date)
-        newer_fcf = fcf_values[i + 1]  # Newer (later date)
-        older_date = fcf_dates[i]
-        newer_date = fcf_dates[i + 1]
-        
+    for i in range(len(historical_fcf) - 1):
+        if is_descending:
+            newer_fcf = historical_fcf[i]
+            older_fcf = historical_fcf[i + 1]
+            older_date = fcf_dates[i + 1]
+            newer_date = fcf_dates[i]
+        else:
+            older_fcf = historical_fcf[i]
+            newer_fcf = historical_fcf[i + 1]
+            older_date = fcf_dates[i]
+            newer_date = fcf_dates[i + 1]
+
         if older_fcf != 0:
             growth = (newer_fcf - older_fcf) / abs(older_fcf)
             growth_rates.append(growth)
             fcf_growth_notes.append(f"  {older_date} → {newer_date}: {growth:.1%}")
-    
-    # Calculate metrics (filter out any NaN/inf values)
+
     valid_growth_rates = [g for g in growth_rates if np.isfinite(g)]
-    
-    # For aggregate metrics (avg, median, CAGR), use filtered data if outliers exist
+
+    # For aggregate metrics (avg, median, CAGR), use filtered data if outliers exist.
     if outliers_dates:
         fcf_growth_notes.append("\nAggregate Metrics Calculation:")
         fcf_growth_notes.append("  Method: Calculated from non-outlier data only")
-        
-        # Filter out outlier data points for aggregate calculations
-        outlier_dates_set = set(outliers_dates)
-        filtered_fcf = [(date, value) for date, value in zip(fcf_dates, fcf_values) 
-                        if date not in outlier_dates_set]
-        
+
+        filtered_fcf = [
+            (date_value, value)
+            for date_value, value in zip(fcf_dates, historical_fcf)
+            if date_value not in outliers_dates_set
+        ]
+
         if len(filtered_fcf) >= 2:
             filtered_dates, filtered_values = zip(*filtered_fcf)
-            
+            filtered_dates = list(filtered_dates)
+            filtered_values = list(filtered_values)
+            filtered_descending = _is_descending_time_order(filtered_dates)
+
             fcf_growth_notes.append(f"  Data points used: {len(filtered_values)} (excluded {len(outliers_dates)} outliers)")
             fcf_growth_notes.append(f"  Date range: {filtered_dates[0]} to {filtered_dates[-1]}")
-            
-            # Recalculate growth rates on filtered data for aggregate metrics
+
             filtered_growth_rates = []
             for i in range(len(filtered_values) - 1):
-                older = filtered_values[i]
-                newer = filtered_values[i + 1]
+                if filtered_descending:
+                    newer = filtered_values[i]
+                    older = filtered_values[i + 1]
+                else:
+                    older = filtered_values[i]
+                    newer = filtered_values[i + 1]
+
                 if older != 0:
                     growth = (newer - older) / abs(older)
                     if np.isfinite(growth):
                         filtered_growth_rates.append(growth)
-            
-            # Use filtered data for aggregate metrics
+
             avg_growth = np.mean(filtered_growth_rates) if filtered_growth_rates else 0
             median_growth = np.median(filtered_growth_rates) if filtered_growth_rates else 0
             years = len(filtered_values) - 1
+            start_value = filtered_values[-1] if filtered_descending else filtered_values[0]
+            end_value = filtered_values[0] if filtered_descending else filtered_values[-1]
 
             fcf_growth_notes.append(f"  Average Growth: {avg_growth:.1%}")
             fcf_growth_notes.append(f"  Median Growth: {median_growth:.1%}")
-            cagr = _append_cagr_note(fcf_growth_notes, filtered_values[0], filtered_values[-1], years)
+            cagr = _append_cagr_note(fcf_growth_notes, start_value, end_value, years)
         else:
             fcf_growth_notes.append("  Warning: Not enough non-outlier data, using all data instead")
-            
-            # Not enough filtered data, fallback to all data
+
             avg_growth = np.mean(valid_growth_rates) if valid_growth_rates else 0
             median_growth = np.median(valid_growth_rates) if valid_growth_rates else 0
-            years = len(fcf_values) - 1 if len(fcf_values) >= 2 else 0
-            start_value = fcf_values[0] if fcf_values else 0
-            end_value = fcf_values[-1] if fcf_values else 0
+            years = len(historical_fcf) - 1 if len(historical_fcf) >= 2 else 0
+            start_value = historical_fcf[-1] if is_descending and historical_fcf else (historical_fcf[0] if historical_fcf else 0)
+            end_value = historical_fcf[0] if is_descending and historical_fcf else (historical_fcf[-1] if historical_fcf else 0)
 
             fcf_growth_notes.append(f"  Average Growth: {avg_growth:.1%}")
             fcf_growth_notes.append(f"  Median Growth: {median_growth:.1%}")
@@ -539,26 +622,29 @@ def calculate_historical_fcf_growth_rates(
     else:
         fcf_growth_notes.append("\nAggregate Metrics Calculation:")
         fcf_growth_notes.append("  Method: Calculated from all data (no outliers detected)")
-        
-        # No outliers, use all data
+
         avg_growth = np.mean(valid_growth_rates) if valid_growth_rates else 0
         median_growth = np.median(valid_growth_rates) if valid_growth_rates else 0
-        years = len(fcf_values) - 1 if len(fcf_values) >= 2 else 0
-        start_value = fcf_values[0] if fcf_values else 0
-        end_value = fcf_values[-1] if fcf_values else 0
+        years = len(historical_fcf) - 1 if len(historical_fcf) >= 2 else 0
+        start_value = historical_fcf[-1] if is_descending and historical_fcf else (historical_fcf[0] if historical_fcf else 0)
+        end_value = historical_fcf[0] if is_descending and historical_fcf else (historical_fcf[-1] if historical_fcf else 0)
 
-        fcf_growth_notes.append(f"  Data points used: {len(fcf_values)}")
-        fcf_growth_notes.append(f"  Date range: {fcf_dates[0]} to {fcf_dates[-1]}")
+        fcf_growth_notes.append(f"  Data points used: {len(historical_fcf)}")
+        if fcf_dates:
+            fcf_growth_notes.append(f"  Date range: {fcf_dates[0]} to {fcf_dates[-1]}")
         fcf_growth_notes.append(f"  Average Growth: {avg_growth:.1%}")
         fcf_growth_notes.append(f"  Median Growth: {median_growth:.1%}")
         cagr = _append_cagr_note(fcf_growth_notes, start_value, end_value, years)
-    
+
     return {
+        'ticker': ticker,
+        'historical_dates': fcf_dates,
+        'historical_fcf': historical_fcf,
         'growth_rates': valid_growth_rates,
         'average_growth': avg_growth,
         'median_growth': median_growth,
         'cagr': cagr,
-        'fcf_growth_notes': fcf_growth_notes
+        'fcf_growth_notes': fcf_growth_notes,
     }
 
 

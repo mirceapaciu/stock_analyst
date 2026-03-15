@@ -240,10 +240,10 @@ def _calculate_beta(stock_returns: pd.Series, benchmark_returns: pd.Series) -> O
     if stock_returns.empty or benchmark_returns.empty:
         return None
 
-    covariance = np.cov(stock_returns, benchmark_returns)[0, 1]
-    variance = np.var(benchmark_returns)
+    covariance = np.cov(stock_returns, benchmark_returns, ddof=1)[0, 1]
+    variance = np.var(benchmark_returns, ddof=1)
 
-    if variance == 0:
+    if variance == 0 or not np.isfinite(variance):
         return None
 
     return float(covariance / variance)

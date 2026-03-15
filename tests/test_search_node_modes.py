@@ -48,6 +48,7 @@ class TestSearchNodeModes:
     def _base_state():
         return {
             "query": "",
+            "executed_queries": [],
             "search_results": [],
             "filtered_search_results": [],
             "expanded_search_results": [],
@@ -105,6 +106,7 @@ class TestSearchNodeModes:
         assert [entry["query"] for entry in query_log] == discovery_queries
         assert all(entry["dateRestrict"] == f"d{MAX_RESULT_AGE_DAYS}" for entry in query_log)
         assert usage_db.logged == [("discovery", 2)]
+        assert result["executed_queries"] == discovery_queries
         assert len(result["search_results"]) == 2
         assert all(not item.get("is_tracked_stock_search") for item in result["search_results"])
 
@@ -161,6 +163,7 @@ class TestSearchNodeModes:
         assert [entry["query"] for entry in query_log] == expected_queries
         assert all(entry["dateRestrict"] == f"d{TRACKED_RESULT_AGE_DAYS}" for entry in query_log)
         assert usage_db.logged == [("tracked_stock", len(expected_queries))]
+        assert result["executed_queries"] == expected_queries
         assert len(result["search_results"]) == len(expected_queries)
         assert all(item.get("is_tracked_stock_search") for item in result["search_results"])
         assert {item.get("tracked_ticker") for item in result["search_results"]} == {"AAPL", "MSFT"}

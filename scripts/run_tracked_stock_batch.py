@@ -156,6 +156,7 @@ def run_tracked_stock_batch() -> int:
 
         initial_state = {
             "query": "",
+            "executed_queries": [],
             "search_results": [],
             "filtered_search_results": [],
             "expanded_search_results": [],

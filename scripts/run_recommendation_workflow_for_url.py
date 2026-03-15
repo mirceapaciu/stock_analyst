@@ -114,6 +114,7 @@ def run_for_url(url: str, title: str | None = None, excerpt_date: str | None = N
 
     state = {
         "query": f"direct_url:{url}",
+        "executed_queries": [f"direct_url:{url}"],
         "search_results": [search_result],
         "filtered_search_results": [search_result],
         "expanded_search_results": [search_result],

@@ -131,6 +131,7 @@ class StockRecommendationsResponse(BaseModel):
 class WorkflowState(TypedDict):
     """State for the stock search workflow."""
     query: str
+    executed_queries: List[str]  # Queries executed by search node
     search_results: List[Dict]  # Results from Google search
     filtered_search_results: List[Dict]  # After duplicate and bad domain filtering
     expanded_search_results: List[Dict]  # Includes filtered_search_results + nested links from those pages
@@ -221,10 +222,14 @@ def get_tracked_batch_query_specs(
 def search_node(state: WorkflowState) -> WorkflowState:
     """Search for stock recommendations using Google Custom Search API."""
     update_progress_if_available(state, 30)
+    executed_queries: List[str] = list(state.get("executed_queries") or [])
+
     try:
         if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
             return {
                 **state,
+                "query": executed_queries[-1] if executed_queries else state.get("query", ""),
+                "executed_queries": executed_queries,
                 "search_results": [],
                 "status": "Search failed: GOOGLE_API_KEY or GOOGLE_CSE_ID not set",
                 "error": "Missing Google API credentials"
@@ -342,6 +347,7 @@ def search_node(state: WorkflowState) -> WorkflowState:
         for query_spec in query_specs:
             query = query_spec['query']
             tracked_ticker = query_spec['tracked_ticker']
+            executed_queries.append(query)
             try:
                 cse_calls_made += 1
                 result = service.cse().list(
@@ -386,6 +392,8 @@ def search_node(state: WorkflowState) -> WorkflowState:
         
         return {
             **state,
+            "query": executed_queries[-1] if executed_queries else state.get("query", ""),
+            "executed_queries": executed_queries,
             "search_results": all_results,
             "status": status,
             "error": ""
@@ -394,6 +402,8 @@ def search_node(state: WorkflowState) -> WorkflowState:
     except Exception as e:
         return {
             **state,
+            "query": executed_queries[-1] if executed_queries else state.get("query", ""),
+            "executed_queries": executed_queries,
             "search_results": [],
             "status": f"Search failed: {str(e)}",
             "error": str(e)

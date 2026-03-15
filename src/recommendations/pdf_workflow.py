@@ -34,6 +34,7 @@ class PdfWorkflowState(TypedDict):
     webpage_id: int
     pdf_file_path: Optional[str]
     query: str
+    executed_queries: List[str]
     search_results: List[Dict]
     filtered_search_results: List[Dict]
     expanded_search_results: List[Dict]
@@ -200,6 +201,7 @@ def run_pdf_workflow_for_webpage_id(
         "webpage_id": int(webpage_id),
         "pdf_file_path": pdf_file_path,
         "query": f"existing_webpage_pdf:{webpage_id}",
+        "executed_queries": [f"existing_webpage_pdf:{webpage_id}"],
         "search_results": [],
         "filtered_search_results": [],
         "expanded_search_results": [],

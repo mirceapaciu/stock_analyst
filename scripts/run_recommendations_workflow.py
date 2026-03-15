@@ -47,6 +47,7 @@ def run_recommendations_workflow():
         # Initialize state
         initial_state = {
             "query": "",
+            "executed_queries": [],
             "search_results": [],
             "filtered_search_results": [],
             "expanded_search_results": [],

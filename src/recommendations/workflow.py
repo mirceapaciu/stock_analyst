@@ -234,17 +234,17 @@ def search_node(state: WorkflowState) -> WorkflowState:
                 "status": "Search failed: GOOGLE_API_KEY or GOOGLE_CSE_ID not set",
                 "error": "Missing Google API credentials"
             }
-        
+
         workflow_mode = str(state.get("workflow_mode") or "discovery").strip().lower()
         if workflow_mode not in {"discovery", "tracked"}:
             workflow_mode = "discovery"
 
         service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
         all_results = []
-        result_index: dict[tuple[str, Optional[str]], int] = {}
-        cse_calls_made = 0
 
         if workflow_mode == "tracked":
+            result_index: dict[tuple[str, Optional[str]], int] = {}
+            cse_calls_made = 0
             batch_tickers = []
             seen_tickers = set()
             for ticker in state.get("batch_tickers") or []:
@@ -271,111 +271,106 @@ def search_node(state: WorkflowState) -> WorkflowState:
                 )
             ]
             date_restrict = f"d{TRACKED_RESULT_AGE_DAYS}"
-        else:
-            batch_tickers = []
-            query_specs = [{"query": query, "tracked_ticker": None} for query in get_search_queries()]
-            date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
 
-        def _upsert_result(item: Dict, tracked_ticker: Optional[str] = None):
-            date_value = None
-            pagemap = item.get('pagemap', {})
-            metatags = pagemap.get('metatags', [])
-            if metatags and len(metatags) > 0:
-                meta = metatags[0]
-                date_value = (
-                    meta.get('og:article:published_time') or
-                    meta.get('article:published_time') or
-                    meta.get('sailthru.date') or
-                    meta.get('og:article:modified_time') or
-                    meta.get('parsely-pub-date') or
-                    meta.get('datePublished') or
-                    meta.get('publishdate') or
-                    meta.get('date') or
-                    meta.get('last-modified') or
-                    meta.get('dc.date') or
-                    meta.get('pubdate') or
-                    meta.get('article:published')
-                )
+            def _upsert_result(item: Dict, tracked_ticker: Optional[str] = None):
+                date_value = None
+                pagemap = item.get('pagemap', {})
+                metatags = pagemap.get('metatags', [])
+                if metatags and len(metatags) > 0:
+                    meta = metatags[0]
+                    date_value = (
+                        meta.get('og:article:published_time') or
+                        meta.get('article:published_time') or
+                        meta.get('sailthru.date') or
+                        meta.get('og:article:modified_time') or
+                        meta.get('parsely-pub-date') or
+                        meta.get('datePublished') or
+                        meta.get('publishdate') or
+                        meta.get('date') or
+                        meta.get('last-modified') or
+                        meta.get('dc.date') or
+                        meta.get('pubdate') or
+                        meta.get('article:published')
+                    )
 
+                    if date_value:
+                        date_value = date_value.rstrip(';').strip()
+
+                normalized_date = None
                 if date_value:
-                    date_value = date_value.rstrip(';').strip()
-
-            normalized_date = None
-            if date_value:
-                try:
-                    date_str = date_value.replace('Z', '').split('T')[0]
-                    date_obj = datetime.fromisoformat(date_str)
-                    normalized_date = date_obj.strftime('%Y-%m-%d')
-                except Exception:
                     try:
-                        from email.utils import parsedate_to_datetime
-                        date_obj = parsedate_to_datetime(date_value)
+                        date_str = date_value.replace('Z', '').split('T')[0]
+                        date_obj = datetime.fromisoformat(date_str)
                         normalized_date = date_obj.strftime('%Y-%m-%d')
                     except Exception:
                         try:
-                            date_obj = datetime.strptime(date_value, '%a, %d %b %Y %H:%M:%S')
+                            from email.utils import parsedate_to_datetime
+                            date_obj = parsedate_to_datetime(date_value)
                             normalized_date = date_obj.strftime('%Y-%m-%d')
                         except Exception:
-                            pass
+                            try:
+                                date_obj = datetime.strptime(date_value, '%a, %d %b %Y %H:%M:%S')
+                                normalized_date = date_obj.strftime('%Y-%m-%d')
+                            except Exception:
+                                pass
 
-            href = item.get('link', '')
-            result_key = (href, normalized_date)
+                href = item.get('link', '')
+                result_key = (href, normalized_date)
 
-            if result_key in result_index:
-                existing = all_results[result_index[result_key]]
-                if tracked_ticker:
-                    existing['is_tracked_stock_search'] = True
-                    existing_tickers = existing.setdefault('tracked_tickers', [])
-                    if tracked_ticker not in existing_tickers:
-                        existing_tickers.append(tracked_ticker)
-                        existing['tracked_ticker'] = existing_tickers[0]
-                return
+                if result_key in result_index:
+                    existing = all_results[result_index[result_key]]
+                    if tracked_ticker:
+                        existing['is_tracked_stock_search'] = True
+                        existing_tickers = existing.setdefault('tracked_tickers', [])
+                        if tracked_ticker not in existing_tickers:
+                            existing_tickers.append(tracked_ticker)
+                            existing['tracked_ticker'] = existing_tickers[0]
+                    return
 
-            tracked_tickers = [tracked_ticker] if tracked_ticker else []
-            all_results.append({
-                'title': item.get('title', ''),
-                'href': href,
-                'body': item.get('snippet', ''),
-                'date': normalized_date,
-                'pagemap': pagemap,
-                'is_tracked_stock_search': bool(tracked_ticker),
-                'tracked_ticker': tracked_ticker,
-                'tracked_tickers': tracked_tickers,
-            })
-            result_index[result_key] = len(all_results) - 1
+                tracked_tickers = [tracked_ticker] if tracked_ticker else []
+                all_results.append({
+                    'title': item.get('title', ''),
+                    'href': href,
+                    'body': item.get('snippet', ''),
+                    'date': normalized_date,
+                    'pagemap': pagemap,
+                    'is_tracked_stock_search': bool(tracked_ticker),
+                    'tracked_ticker': tracked_ticker,
+                    'tracked_tickers': tracked_tickers,
+                })
+                result_index[result_key] = len(all_results) - 1
 
-        for query_spec in query_specs:
-            query = query_spec['query']
-            tracked_ticker = query_spec['tracked_ticker']
-            executed_queries.append(query)
-            try:
-                cse_calls_made += 1
-                result = service.cse().list(
-                    q=query,
-                    cx=GOOGLE_CSE_ID,
-                    num=min(MAX_SEARCH_RESULTS, 10),
-                    dateRestrict=date_restrict,
-                    sort='date'
-                ).execute()
+            for query_spec in query_specs:
+                query = query_spec['query']
+                tracked_ticker = query_spec['tracked_ticker']
+                executed_queries.append(query)
+                try:
+                    cse_calls_made += 1
+                    result = service.cse().list(
+                        q=query,
+                        cx=GOOGLE_CSE_ID,
+                        num=min(MAX_SEARCH_RESULTS, 10),
+                        dateRestrict=date_restrict,
+                        sort='date'
+                    ).execute()
 
-                if 'items' in result:
-                    for item in result['items']:
-                        _upsert_result(item, tracked_ticker=tracked_ticker)
-            except Exception as e:
-                logger.error(f"Search query '{query}' failed: {e}")
-                continue
+                    if 'items' in result:
+                        for item in result['items']:
+                            _upsert_result(item, tracked_ticker=tracked_ticker)
+                except Exception as e:
+                    logger.error(f"Search query '{query}' failed: {e}")
+                    continue
 
-        if cse_calls_made > 0:
-            try:
-                usage_db = RecommendationsDatabase()
-                usage_db.log_cse_usage(
-                    workflow_type="tracked_stock" if workflow_mode == "tracked" else "discovery",
-                    queries_count=cse_calls_made,
-                )
-            except Exception as usage_error:
-                logger.warning(f"Failed to log CSE usage: {usage_error}")
+            if cse_calls_made > 0:
+                try:
+                    usage_db = RecommendationsDatabase()
+                    usage_db.log_cse_usage(
+                        workflow_type="tracked_stock",
+                        queries_count=cse_calls_made,
+                    )
+                except Exception as usage_error:
+                    logger.warning(f"Failed to log CSE usage: {usage_error}")
 
-        if workflow_mode == "tracked":
             tracked_results_count = sum(1 for r in all_results if r.get('is_tracked_stock_search'))
             status = (
                 f"Tracked mode: found {len(all_results)} results from {len(query_specs)} queries "
@@ -385,11 +380,86 @@ def search_node(state: WorkflowState) -> WorkflowState:
             if not query_specs:
                 status = "Tracked mode: no tickers provided for this batch"
         else:
-            status = (
-                f"Found {len(all_results)} results from {len(query_specs)} queries "
-                f"(filtered by {MAX_RESULT_AGE_DAYS} days)"
-            )
-        
+            date_restrict = f"d{MAX_RESULT_AGE_DAYS}"
+            discovery_calls_made = 0
+
+            for query in get_search_queries():
+                executed_queries.append(query)
+                try:
+                    discovery_calls_made += 1
+                    result = service.cse().list(
+                        q=query,
+                        cx=GOOGLE_CSE_ID,
+                        num=min(MAX_SEARCH_RESULTS, 10),
+                        dateRestrict=date_restrict,
+                        sort='date'
+                    ).execute()
+
+                    if 'items' in result:
+                        for item in result['items']:
+                            date_value = None
+                            pagemap = item.get('pagemap', {})
+                            metatags = pagemap.get('metatags', [])
+                            if metatags and len(metatags) > 0:
+                                meta = metatags[0]
+                                date_value = (
+                                    meta.get('og:article:published_time') or
+                                    meta.get('article:published_time') or
+                                    meta.get('sailthru.date') or
+                                    meta.get('og:article:modified_time') or
+                                    meta.get('parsely-pub-date') or
+                                    meta.get('datePublished') or
+                                    meta.get('publishdate') or
+                                    meta.get('date') or
+                                    meta.get('last-modified') or
+                                    meta.get('dc.date') or
+                                    meta.get('pubdate') or
+                                    meta.get('article:published')
+                                )
+
+                                if date_value:
+                                    date_value = date_value.rstrip(';').strip()
+
+                            normalized_date = None
+                            if date_value:
+                                try:
+                                    date_str = date_value.replace('Z', '').split('T')[0]
+                                    date_obj = datetime.fromisoformat(date_str)
+                                    normalized_date = date_obj.strftime('%Y-%m-%d')
+                                except Exception:
+                                    try:
+                                        from email.utils import parsedate_to_datetime
+                                        date_obj = parsedate_to_datetime(date_value)
+                                        normalized_date = date_obj.strftime('%Y-%m-%d')
+                                    except Exception:
+                                        try:
+                                            date_obj = datetime.strptime(date_value, '%a, %d %b %Y %H:%M:%S')
+                                            normalized_date = date_obj.strftime('%Y-%m-%d')
+                                        except Exception:
+                                            pass
+
+                            all_results.append({
+                                'title': item.get('title', ''),
+                                'href': item.get('link', ''),
+                                'body': item.get('snippet', ''),
+                                'date': normalized_date,
+                                'pagemap': pagemap,
+                            })
+                except Exception as e:
+                    logger.error(f"Search query '{query}' failed: {e}")
+                    continue
+
+            try:
+                usage_db = RecommendationsDatabase()
+                usage_db.log_cse_usage(
+                    workflow_type="discovery",
+                    queries_count=discovery_calls_made,
+                )
+            except Exception as usage_error:
+                logger.warning(f"Failed to log CSE usage: {usage_error}")
+
+            status = f"Found {len(all_results)} results (filtered by {MAX_RESULT_AGE_DAYS} days)"
+
         return {
             **state,
             "query": executed_queries[-1] if executed_queries else state.get("query", ""),
@@ -467,6 +537,9 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
     """Analyze each search result with an LLM to detect if it contains stock picks."""
     update_progress_if_available(state, 55)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    workflow_mode = str(state.get("workflow_mode") or "discovery").strip().lower()
+    if workflow_mode not in {"discovery", "tracked"}:
+        workflow_mode = "discovery"
 
     async def analyze_single_result(r: Dict) -> Dict:
         """Analyze a single search result asynchronously."""
@@ -492,18 +565,10 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
                 if not existing_date:
                     ex_date = parsed.get("excerpt_date")
             except Exception:
-                contains = any(
-                    w.lower() in (title + " " + body).lower()
-                    for w in [
-                        "undervalued",
-                        "undervalued stocks",
-                        "cheap stocks",
-                        "value picks",
-                        "stock analysis",
-                        "stock rating",
-                        "stock forecast",
-                    ]
-                )
+                fallback_keywords = ["undervalued", "undervalued stocks", "cheap stocks", "value picks"]
+                if workflow_mode == "tracked":
+                    fallback_keywords = fallback_keywords + ["stock analysis", "stock rating", "stock forecast"]
+                contains = any(w.lower() in (title + " " + body).lower() for w in fallback_keywords)
                 if not existing_date:
                     ex_date = None
         except Exception:
@@ -519,7 +584,9 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
                 ex_date = None
 
         updated = dict(r)
-        updated["contains_stocks"] = contains or bool(r.get("is_tracked_stock_search"))
+        updated["contains_stocks"] = contains or (
+            workflow_mode == "tracked" and bool(r.get("is_tracked_stock_search"))
+        )
         updated["excerpt_date"] = ex_date
         return updated
 
@@ -1591,7 +1658,7 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
     """Validate and enrich stock ticker information using lookup_stock()."""
     from services.recommendations import lookup_stock
     from services.financial import get_or_create_stock_info
-    
+
     db = RecommendationsDatabase()
 
     def _name_similarity(left: str, right: str) -> float:
@@ -1922,10 +1989,10 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
                         "for new stock"
                     )
                     continue
-                
+
                 if original_exchange != stock_info['exchange'] or original_stock_name != stock_info['stock_name']:
                     enriched_count += 1
-                
+
                 validated_count += 1
                 
             except Exception as e:
@@ -1941,7 +2008,7 @@ def validate_tickers_node(state: WorkflowState) -> WorkflowState:
         status_msg += f", {filtered_rating_count} filtered by rating"
     if invalid_count > 0:
         status_msg += f", {invalid_count} invalid/not found"
-    
+
     return {
         **state,
         "status": status_msg

@@ -32,6 +32,7 @@ from config import (
     MIN_MARKET_CAP,
     MIN_RATING_NEW_STOCK,
     REPUTABLE_SITES,
+    BROWSER_FETCH_TIMEOUT_SECONDS,
     build_tracked_query,
 )
 from repositories.recommendations_db import RecommendationsDatabase
@@ -630,7 +631,12 @@ def extract_date_from_webpage(search_result: Dict, soup: BeautifulSoup) -> datet
     return page_date
 
 
-def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) -> tuple[str, BeautifulSoup, str, Optional[bytes]]:
+def fetch_webpage_content(
+    url: str,
+    headers: Dict,
+    use_browser: bool = False,
+    browser_timeout_seconds: int = BROWSER_FETCH_TIMEOUT_SECONDS,
+) -> tuple[str, BeautifulSoup, str, Optional[bytes]]:
     """Fetch webpage and return (page_text, parsed_soup, original_html, pdf_bytes)."""
     if use_browser:
         from playwright.async_api import async_playwright
@@ -969,8 +975,15 @@ def fetch_webpage_content(url: str, headers: Dict, use_browser: bool = False) ->
                 finally:
                     await browser.close()
         
-        # Run async Playwright
-        html_content, pdf_bytes = asyncio.run(run_playwright_async())
+        # Run async Playwright with a hard timeout to prevent indefinite hangs.
+        try:
+            html_content, pdf_bytes = asyncio.run(
+                asyncio.wait_for(run_playwright_async(), timeout=browser_timeout_seconds)
+            )
+        except asyncio.TimeoutError as timeout_error:
+            raise TimeoutError(
+                f"Browser fetch timed out after {browser_timeout_seconds}s for {url}"
+            ) from timeout_error
         
         soup = BeautifulSoup(html_content, 'html.parser')
     else:
@@ -1148,8 +1161,9 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
     from urllib.parse import urlparse
     parsed_url = urlparse(url)
     domain = parsed_url.netloc
-    # use_browser = db.needs_browser_rendering(domain)
-    use_browser = True
+    use_browser = db.needs_browser_rendering(domain)
+
+    logger.info(f"Scraping page: {url} (browser={use_browser})")
     
     try:
         page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=use_browser)
@@ -1417,6 +1431,9 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
             return None
     
     scraped_pages = []
+    total_pages = len(pages_to_scrape)
+    logger.info(f"Scraping {total_pages} page(s) with max_workers={MAX_WORKERS}")
+    completed_pages = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_page = {
@@ -1425,9 +1442,12 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
         }
         
         for future in concurrent.futures.as_completed(future_to_page):
+            completed_pages += 1
             page_data = future.result()
             if page_data:
                 scraped_pages.append(page_data)
+            if completed_pages == total_pages or completed_pages % 5 == 0:
+                logger.info(f"Scrape progress: {completed_pages}/{total_pages} page(s) completed")
     
     scraped_count = len(scraped_pages)
     total_recommendations = sum(len(page.get('stock_recommendations', [])) for page in scraped_pages)

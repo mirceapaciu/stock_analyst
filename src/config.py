@@ -134,5 +134,8 @@ MIN_RATING_NEW_STOCK = min(5, max(1, int(os.getenv("MIN_RATING_NEW_STOCK", "4"))
 # Thread pool settings
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 
+# Browser scraping timeout (seconds) to avoid indefinite hangs on problematic pages.
+BROWSER_FETCH_TIMEOUT_SECONDS = max(10, int(os.getenv("BROWSER_FETCH_TIMEOUT_SECONDS", "90")))
+
 # Recommendations aggregation settings
 RECOMMENDATION_LOOKBACK_MONTHS = max(0, int(os.getenv("RECOMMENDATION_LOOKBACK_MONTHS", "2")))

@@ -121,6 +121,8 @@ def run_for_url(url: str, title: str | None = None, excerpt_date: str | None = N
         "scraped_pages": [page_data],
         "deduplicated_pages": [],
         "skipped_recommendations": [],
+        "fetch_metrics": page_data.get("fetch_metrics", {}),
+        "extraction_metrics": page_data.get("extraction_metrics", {}),
         "status": "scraped",
         "error": "",
         "process_name": None,

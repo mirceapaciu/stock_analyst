@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+import requests
 
 from bs4 import BeautifulSoup
 
@@ -12,6 +13,7 @@ src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from recommendations.workflow import fetch_webpage_content, scrape_single_page
+from repositories.recommendations_db import RecommendationsDatabase
 
 
 def _make_mock_response(content: bytes, content_encoding: str = "", status_code: int = 200):
@@ -137,6 +139,7 @@ class TestScrapeSinglePageBrotliFallback:
 
         db = MagicMock()
         db.needs_browser_rendering.return_value = False
+        db.get_blocked_url_match.return_value = None
 
         html = "<html><body><article><p>Readable stock article text</p></article></body></html>"
         soup = BeautifulSoup(html, "html.parser")
@@ -173,6 +176,7 @@ class TestScrapeSinglePageBrotliFallback:
 
         db = MagicMock()
         db.needs_browser_rendering.return_value = False
+        db.get_blocked_url_match.return_value = None
 
         with patch(
             "recommendations.workflow.fetch_webpage_content",
@@ -184,3 +188,55 @@ class TestScrapeSinglePageBrotliFallback:
             result = scrape_single_page(search_result, headers, db)
 
         assert result is None
+
+
+class TestScrapeSinglePageBlockedPages:
+    def test_terminal_http_status_records_block_rule(self, tmp_path):
+        """401/403/404 terminal failures should be persisted as blocked URL rules without retry storms."""
+        search_result = {
+            "href": "https://www.reuters.com/markets/companies/CNNE.P/profile/",
+            "title": "Reuters profile",
+            "excerpt_date": "2026-03-28",
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+        db = RecommendationsDatabase(str(tmp_path / "blocked_pages.duckdb"))
+
+        http_error = requests.HTTPError("401 Unauthorized")
+        http_error.response = MagicMock(status_code=401)
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content",
+            side_effect=http_error,
+        ) as mock_fetch:
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["fetch_status"] == "blocked_terminal"
+        assert result["fetch_status_code"] == 401
+        assert result["fetch_metrics"]["blocked_terminal_failures"] == 1
+        assert mock_fetch.call_count == 1
+
+        blocked_match = db.get_blocked_url_match(search_result["href"])
+        assert blocked_match is not None
+        assert blocked_match["status_code"] == 401
+        assert any("/markets/companies/*/profile/" in pattern for pattern in db.get_blocked_url_patterns())
+
+    def test_cached_block_rule_skips_future_fetches(self, tmp_path):
+        """Persisted blocked URL patterns should short-circuit later runs before network fetch."""
+        search_result = {
+            "href": "https://www.reuters.com/markets/companies/CNNE.P/profile/",
+            "title": "Reuters profile",
+            "excerpt_date": "2026-03-28",
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+        db = RecommendationsDatabase(str(tmp_path / "blocked_pages_cache.duckdb"))
+        db.record_blocked_url(search_result["href"], status_code=403, reason="terminal_http_status")
+
+        with patch("recommendations.workflow.fetch_webpage_content") as mock_fetch:
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["fetch_status"] == "blocked_cached"
+        assert result["fetch_metrics"]["blocked_cached_skips"] == 1
+        assert result["matched_blocked_pattern"] in db.get_blocked_url_patterns()
+        mock_fetch.assert_not_called()

@@ -5,11 +5,13 @@ import csv
 import json
 import logging
 import os
+from fnmatch import fnmatch
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from datetime import date, timedelta, datetime
 from pathlib import Path
 import time
+from urllib.parse import urlsplit, urlunsplit
 from config import (
     RECOMMENDATIONS_DB_PATH,
     FINNHUB_API_KEY,
@@ -52,6 +54,65 @@ class BatchSweep:
 
 class RecommendationsDatabase:
     """Manages SQLite database for stock recommendations."""
+
+    @staticmethod
+    def _normalize_domain(domain: str) -> str:
+        normalized = (domain or '').strip().lower()
+        if normalized.startswith('www.'):
+            normalized = normalized[4:]
+        return normalized
+
+    @classmethod
+    def _normalize_url_pattern(cls, url: str) -> str:
+        parsed = urlsplit((url or '').strip())
+        scheme = (parsed.scheme or 'https').lower()
+        netloc = parsed.netloc.lower()
+        path = parsed.path or '/'
+        return urlunsplit((scheme, netloc, path, '', ''))
+
+    @staticmethod
+    def _looks_dynamic_url_segment(segment: str) -> bool:
+        candidate = (segment or '').strip()
+        if not candidate:
+            return False
+        if candidate.isdigit():
+            return True
+        if any(char.isdigit() for char in candidate):
+            return True
+        if '.' in candidate and any(char.isalpha() for char in candidate) and candidate.upper() == candidate:
+            return True
+        if candidate.upper() == candidate and any(char.isalpha() for char in candidate) and len(candidate) <= 12:
+            return True
+        return False
+
+    @classmethod
+    def _build_blocked_url_patterns(cls, url: str) -> List[str]:
+        normalized_url = cls._normalize_url_pattern(url)
+        parsed = urlsplit(normalized_url)
+        segments = [segment for segment in parsed.path.split('/') if segment]
+        patterns = [normalized_url]
+
+        if not segments:
+            return patterns
+
+        wildcard_segments = []
+        wildcard_count = 0
+        for segment in segments:
+            if cls._looks_dynamic_url_segment(segment):
+                wildcard_segments.append('*')
+                wildcard_count += 1
+            else:
+                wildcard_segments.append(segment)
+
+        if 0 < wildcard_count <= min(3, len(segments)):
+            wildcard_path = '/' + '/'.join(wildcard_segments)
+            if parsed.path.endswith('/'):
+                wildcard_path += '/'
+            wildcard_url = urlunsplit((parsed.scheme, parsed.netloc, wildcard_path, '', ''))
+            if wildcard_url != normalized_url:
+                patterns.append(wildcard_url)
+
+        return patterns
     
     def __init__(self, db_path: str = RECOMMENDATIONS_DB_PATH):
         """Initialize database connection and create tables if needed."""
@@ -143,6 +204,22 @@ class RecommendationsDatabase:
                 UNIQUE (url, date)
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blocked_url_pattern (
+                pattern VARCHAR(500) PRIMARY KEY,
+                domain VARCHAR(100) NOT NULL,
+                status_code INTEGER,
+                reason VARCHAR(100),
+                hit_count INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TIMESTAMP NOT NULL,
+                last_seen_at TIMESTAMP NOT NULL
+            )
+        """)
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_blocked_url_pattern_domain ON blocked_url_pattern (domain)"
+        )
 
         # Stock table
         cursor.execute("""
@@ -558,8 +635,10 @@ class RecommendationsDatabase:
         """Insert or get website ID."""
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        normalized_domain = self._normalize_domain(domain)
         
-        cursor.execute("SELECT id, is_usable, requires_browser FROM website WHERE domain = ?", (domain,))
+        cursor.execute("SELECT id, is_usable, requires_browser FROM website WHERE domain = ?", (normalized_domain,))
         result = cursor.fetchone()
 
         if result:
@@ -579,7 +658,7 @@ class RecommendationsDatabase:
             final_is_usable = is_usable if is_usable is not None else 2
             final_requires_browser = requires_browser if requires_browser is not None else 0
             cursor.execute("INSERT INTO website (domain, is_usable, requires_browser) VALUES (?, ?, ?)", 
-                         (domain, final_is_usable, final_requires_browser))
+                         (normalized_domain, final_is_usable, final_requires_browser))
             website_id = cursor.lastrowid
             conn.commit()
         
@@ -665,6 +744,75 @@ class RecommendationsDatabase:
         
         conn.close()
         return domains
+
+    def record_blocked_url(self, url: str, status_code: Optional[int] = None, reason: Optional[str] = None) -> List[str]:
+        """Persist an exact URL and a coarse wildcard URL pattern for terminal blocked pages."""
+        normalized_url = self._normalize_url_pattern(url)
+        parsed = urlsplit(normalized_url)
+        domain = self._normalize_domain(parsed.netloc)
+        patterns = self._build_blocked_url_patterns(normalized_url)
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        for pattern in patterns:
+            cursor.execute(
+                """
+                INSERT INTO blocked_url_pattern (pattern, domain, status_code, reason, hit_count, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(pattern) DO UPDATE SET
+                    status_code = COALESCE(excluded.status_code, blocked_url_pattern.status_code),
+                    reason = COALESCE(excluded.reason, blocked_url_pattern.reason),
+                    hit_count = blocked_url_pattern.hit_count + 1,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (pattern, domain, status_code, reason, timestamp, timestamp),
+            )
+
+        conn.commit()
+        conn.close()
+        return patterns
+
+    def get_blocked_url_match(self, url: str) -> Optional[Dict]:
+        """Return matching blocked URL rule for a URL, if any."""
+        normalized_url = self._normalize_url_pattern(url)
+        parsed = urlsplit(normalized_url)
+        domain = self._normalize_domain(parsed.netloc)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT pattern, status_code, reason, hit_count
+            FROM blocked_url_pattern
+            WHERE domain = ?
+            ORDER BY CASE WHEN instr(pattern, '*') = 0 THEN 0 ELSE 1 END, LENGTH(pattern) DESC
+            """,
+            (domain,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        for pattern, status_code, reason, hit_count in rows:
+            if fnmatch(normalized_url, pattern):
+                return {
+                    'pattern': pattern,
+                    'status_code': status_code,
+                    'reason': reason,
+                    'hit_count': hit_count,
+                }
+
+        return None
+
+    def get_blocked_url_patterns(self) -> List[str]:
+        """Return all persisted blocked URL patterns."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT pattern FROM blocked_url_pattern ORDER BY pattern")
+        patterns = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return patterns
     
     def needs_browser_rendering(self, domain: str) -> bool:
         """Check if domain requires browser rendering for JavaScript content."""
@@ -672,7 +820,7 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         # Check exact domain or any parent domain
-        domain_parts = domain.split('.')
+        domain_parts = self._normalize_domain(domain).split('.')
         domains_to_check = ['.'.join(domain_parts[i:]) for i in range(len(domain_parts) - 1)]
         
         for check_domain in domains_to_check:

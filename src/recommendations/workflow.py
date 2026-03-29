@@ -6,6 +6,7 @@ import json
 import logging
 import asyncio
 from urllib.parse import urlparse
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
@@ -44,6 +45,25 @@ from recommendations.prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+LOW_QUALITY_RECOMMENDATION_THRESHOLD = 40
+TERMINAL_HTTP_STATUS_CODES = {401, 403, 404, 410}
+
+
+@dataclass
+class TerminalFetchFailure(Exception):
+    """Raised when a URL is blocked by a cached rule or terminal HTTP failure."""
+
+    url: str
+    reason: str
+    status_code: Optional[int] = None
+    matched_pattern: Optional[str] = None
+    cached: bool = False
+
+    def metrics(self) -> Dict[str, int]:
+        if self.cached:
+            return {'blocked_cached_skips': 1}
+        return {'blocked_terminal_failures': 1}
 
 # Pydantic models for LLM response validation
 class RecommendationQuality(BaseModel):
@@ -145,6 +165,17 @@ class WorkflowState(TypedDict):
     workflow_mode: Optional[str]  # discovery (default) | tracked
     batch_tickers: Optional[List[str]]  # Tickers processed in tracked mode
     batch_stock_names: Optional[Dict[str, str]]  # Optional ticker->stock name mapping
+    fetch_metrics: Optional[Dict[str, int]]
+    extraction_metrics: Optional[Dict[str, int]]
+
+
+def merge_count_maps(*maps: Optional[Dict[str, int]]) -> Dict[str, int]:
+    """Combine sparse integer metric maps."""
+    merged: Dict[str, int] = {}
+    for current in maps:
+        for key, value in (current or {}).items():
+            merged[key] = merged.get(key, 0) + int(value or 0)
+    return merged
 
 
 def update_progress_if_available(state: WorkflowState, progress: int):
@@ -514,13 +545,19 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
     search_results = state.get("search_results", [])
     filtered = []
     bad_removed = 0
+    blocked_removed = 0
+    fetch_metrics = merge_count_maps(state.get('fetch_metrics'))
     
     for result in search_results:
         url = result.get('href', '')
         try:
             domain = urlparse(url).netloc.replace('www.', '')
             is_unusable = any(domain.endswith(unusable) for unusable in unusable_domains)
-            if not is_unusable:
+            blocked_match = db.get_blocked_url_match(url)
+            if blocked_match:
+                blocked_removed += 1
+                fetch_metrics = merge_count_maps(fetch_metrics, {'blocked_cached_skips': 1})
+            elif not is_unusable:
                 filtered.append(result)
             else:
                 bad_removed += 1
@@ -530,7 +567,8 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
     return {
         **state,
         "filtered_search_results": filtered,
-        "status": f"Removed {bad_removed} from unusable domains, {len(filtered)} results remaining"
+        "fetch_metrics": fetch_metrics,
+        "status": f"Removed {bad_removed} from unusable domains, {blocked_removed} from blocked URL rules, {len(filtered)} results remaining"
     }
 
 
@@ -629,6 +667,109 @@ def extract_date_from_webpage(search_result: Dict, soup: BeautifulSoup) -> datet
     if not page_date and search_result.get('date'):
         page_date = datetime.strptime(search_result['date'], '%Y-%m-%d')
     return page_date
+
+
+def _get_request_status_code(error: Exception) -> Optional[int]:
+    response = getattr(error, 'response', None)
+    if response is None:
+        return None
+    return getattr(response, 'status_code', None)
+
+
+def _build_blocked_page_result(
+    search_result: Dict,
+    reason: str,
+    fetch_status: str,
+    fetch_metrics: Dict[str, int],
+    status_code: Optional[int] = None,
+    matched_pattern: Optional[str] = None,
+) -> Dict:
+    result = {
+        'url': search_result.get('href', ''),
+        'webpage_title': search_result.get('title', ''),
+        'webpage_date': search_result.get('excerpt_date') or search_result.get('date') or datetime.now().strftime('%Y-%m-%d'),
+        'page_text': '',
+        'pdf_content': None,
+        'stock_recommendations': [],
+        'fetch_status': fetch_status,
+        'fetch_error': reason,
+        'fetch_metrics': fetch_metrics,
+        'extraction_metrics': {},
+        'is_tracked_stock_search': bool(search_result.get('is_tracked_stock_search')),
+        'tracked_tickers': list(search_result.get('tracked_tickers') or []),
+    }
+    if status_code is not None:
+        result['fetch_status_code'] = status_code
+    if matched_pattern:
+        result['matched_blocked_pattern'] = matched_pattern
+    if 'expanded_from_url' in search_result:
+        result['expanded_from_url'] = search_result['expanded_from_url']
+    return result
+
+
+def fetch_webpage_content_with_policy(
+    url: str,
+    headers: Dict,
+    db: RecommendationsDatabase,
+    use_browser: Optional[bool] = None,
+) -> tuple[str, BeautifulSoup, str, Optional[bytes]]:
+    """Fetch webpage with blocked-URL caching and bounded browser fallback for terminal failures."""
+    blocked_match = db.get_blocked_url_match(url)
+    if blocked_match:
+        raise TerminalFetchFailure(
+            url=url,
+            reason=f"Blocked URL rule matched: {blocked_match['pattern']}",
+            status_code=blocked_match.get('status_code'),
+            matched_pattern=blocked_match['pattern'],
+            cached=True,
+        )
+
+    domain = urlparse(url).netloc
+    browser_mode = db.needs_browser_rendering(domain) if use_browser is None else use_browser
+
+    try:
+        return fetch_webpage_content(url, headers, use_browser=browser_mode)
+    except ValueError as error:
+        error_text = str(error)
+        if "Brotli-compressed" in error_text and not browser_mode:
+            logger.warning(f"Brotli encoding issue for {url}, retrying with browser rendering")
+            page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
+            logger.info(f"Browser rendering successful for {domain}, updating database")
+            db.upsert_website(domain, is_usable=1, requires_browser=1)
+            return page_text, soup, original_html, pdf_bytes
+        raise
+    except requests.RequestException as error:
+        status_code = _get_request_status_code(error)
+
+        if status_code == 403 and not browser_mode:
+            logger.warning(f"403 Forbidden for {url}, retrying once with browser rendering")
+            try:
+                page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
+                logger.info(f"Browser rendering successful for {domain}, updating database")
+                db.upsert_website(domain, is_usable=1, requires_browser=1)
+                return page_text, soup, original_html, pdf_bytes
+            except requests.RequestException as browser_error:
+                browser_status_code = _get_request_status_code(browser_error)
+                if browser_status_code in TERMINAL_HTTP_STATUS_CODES:
+                    patterns = db.record_blocked_url(url, status_code=browser_status_code, reason='terminal_http_status')
+                    logger.info(f"Persisted blocked URL rules for {url}: {patterns}")
+                    raise TerminalFetchFailure(
+                        url=url,
+                        reason=f"Terminal HTTP {browser_status_code} after browser retry",
+                        status_code=browser_status_code,
+                    ) from browser_error
+                raise
+
+        if status_code in TERMINAL_HTTP_STATUS_CODES:
+            patterns = db.record_blocked_url(url, status_code=status_code, reason='terminal_http_status')
+            logger.info(f"Persisted blocked URL rules for {url}: {patterns}")
+            raise TerminalFetchFailure(
+                url=url,
+                reason=f"Terminal HTTP {status_code}",
+                status_code=status_code,
+            ) from error
+
+        raise
 
 
 def fetch_webpage_content(
@@ -1096,10 +1237,15 @@ def extract_stock_recommendations_with_llm(
     page_text: str,
     page_date: datetime,
     tracked_tickers: Optional[List[str]] = None,
-) -> List[Dict]:
+    return_metrics: bool = False,
+) -> List[Dict] | tuple[List[Dict], Dict[str, int]]:
     """Extract stock recommendations from page content using LLM."""
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(StockRecommendationsResponse)
+    extraction_metrics = {
+        'hallucinated_tickers': 0,
+        'low_quality_filtered': 0,
+    }
 
     if tracked_tickers:
         extraction_prompt = get_extract_stocks_prompt_tracked(url, title, page_text, tracked_tickers)
@@ -1110,7 +1256,7 @@ def extract_stock_recommendations_with_llm(
         llm_response = structured_llm.invoke([HumanMessage(content=extraction_prompt)])
     except Exception as e:
         logger.error(f"Error extracting recommendations from {url}: {e}")
-        return []
+        return ([], extraction_metrics) if return_metrics else []
     
     analysis_date = llm_response.analysis_date
     if not analysis_date or analysis_date == "N/A":
@@ -1120,7 +1266,7 @@ def extract_stock_recommendations_with_llm(
         analysis_date = datetime.now().strftime('%Y-%m-%d')
    
     if not llm_response.tickers:
-        return []
+        return ([], extraction_metrics) if return_metrics else []
     
     recommendations = []
     for ticker_obj in llm_response.tickers:
@@ -1130,6 +1276,12 @@ def extract_stock_recommendations_with_llm(
         if validate_ticker_in_text(ticker_obj.ticker, page_text):
             # Calculate quality score from LLM-extracted quality indicators
             quality_score = calculate_recommendation_quality_score(ticker_obj.quality)
+            if quality_score < LOW_QUALITY_RECOMMENDATION_THRESHOLD:
+                extraction_metrics['low_quality_filtered'] += 1
+                logger.info(
+                    f"Filtered low quality recommendation for {ticker_obj.ticker}: score={quality_score}"
+                )
+                continue
             
             recommendation = {
                 'ticker': ticker_obj.ticker,
@@ -1149,14 +1301,14 @@ def extract_stock_recommendations_with_llm(
                 'quality_has_rating': ticker_obj.quality.has_explicit_rating,
                 'quality_reasoning_level': ticker_obj.quality.reasoning_detail_level
             }
-            
-            if quality_score < 40:
-                logger.warning(f"Low quality recommendation for {ticker_obj.ticker}: score={quality_score}")
-            
+
             recommendations.append(recommendation)
         else:
+            extraction_metrics['hallucinated_tickers'] += 1
             logger.warning(f"Hallucinated ticker {ticker_obj.ticker} not found in text, skipping")
-            
+
+    if return_metrics:
+        return recommendations, extraction_metrics
     return recommendations
 
 def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDatabase) -> Dict:
@@ -1173,43 +1325,31 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
     logger.info(f"Scraping page: {url} (browser={use_browser})")
     
     try:
-        page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=use_browser)
+        page_text, soup, original_html, pdf_bytes = fetch_webpage_content_with_policy(
+            url,
+            headers,
+            db,
+            use_browser=use_browser,
+        )
+    except TerminalFetchFailure as blocked_error:
+        logger.info(f"Skipping blocked page {url}: {blocked_error.reason}")
+        return _build_blocked_page_result(
+            search_result,
+            reason=blocked_error.reason,
+            fetch_status='blocked_cached' if blocked_error.cached else 'blocked_terminal',
+            fetch_metrics=blocked_error.metrics(),
+            status_code=blocked_error.status_code,
+            matched_pattern=blocked_error.matched_pattern,
+        )
     except ValueError as e:
-        error_text = str(e)
-        if "Brotli-compressed" in error_text and not use_browser:
-            logger.warning(f"Brotli encoding issue for {url}, retrying with browser rendering")
-            try:
-                page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
-                logger.info(f"Browser rendering successful for {domain}, updating database")
-                db.upsert_website(domain, is_usable=1, requires_browser=1)
-            except Exception as browser_error:
-                logger.error(f"Browser rendering also failed for {url}: {browser_error}")
-                logger.warning(f"Marking domain {domain} as unusable")
-                db.upsert_website(domain, is_usable=0)
-                return None
-        else:
-            logger.error(f"Failed to fetch {url}: {e}")
-            return None
+        logger.error(f"Failed to fetch {url}: {e}")
+        return None
     except requests.RequestException as e:
-        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 403:
-            if not use_browser:
-                logger.warning(f"403 Forbidden for {url}, retrying with browser rendering")
-                try:
-                    page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
-                    logger.info(f"Browser rendering successful for {domain}, updating database")
-                    db.upsert_website(domain, is_usable=1, requires_browser=1)
-                except Exception as browser_error:
-                    logger.error(f"Browser rendering also failed for {url}: {browser_error}")
-                    logger.warning(f"Marking domain {domain} as unusable")
-                    db.upsert_website(domain, is_usable=0)
-                    return None
-            else:
-                logger.warning(f"403 Forbidden even with browser for {url}, marking domain {domain} as unusable")
-                db.upsert_website(domain, is_usable=0)
-                return None
-        else:
-            logger.error(f"Failed to fetch {url}: {e}")
-            return None
+        logger.error(f"Failed to fetch {url}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch {url}: {e}")
+        return None
     
     try:
         page_date = extract_date_from_webpage(search_result, soup)
@@ -1239,12 +1379,13 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             if tracked_ticker:
                 tracked_tickers = [tracked_ticker]
 
-        stock_recommendations = extract_stock_recommendations_with_llm(
+        stock_recommendations, extraction_metrics = extract_stock_recommendations_with_llm(
             url=url,
             title=webpage_title,
             page_text=page_text,
             page_date=page_date,
             tracked_tickers=tracked_tickers,
+            return_metrics=True,
         )
 
         result = {
@@ -1254,6 +1395,9 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             'page_text': page_text,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
             'stock_recommendations': stock_recommendations,
+            'fetch_status': 'ok',
+            'fetch_metrics': {},
+            'extraction_metrics': extraction_metrics,
             'is_tracked_stock_search': bool(search_result.get('is_tracked_stock_search')),
             'tracked_tickers': tracked_tickers,
         }
@@ -1272,7 +1416,10 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text,
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
-            'stock_recommendations': []
+            'stock_recommendations': [],
+            'fetch_status': 'ok',
+            'fetch_metrics': {},
+            'extraction_metrics': {},
         }
         if 'expanded_from_url' in search_result:
             result['expanded_from_url'] = search_result['expanded_from_url']
@@ -1285,7 +1432,10 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             'webpage_date': datetime.now().strftime('%Y-%m-%d'),
             'page_text': page_text if 'page_text' in locals() else '',
             'pdf_content': pdf_bytes if 'pdf_bytes' in locals() else None,
-            'stock_recommendations': []
+            'stock_recommendations': [],
+            'fetch_status': 'ok',
+            'fetch_metrics': {},
+            'extraction_metrics': {},
         }
         if 'expanded_from_url' in search_result:
             result['expanded_from_url'] = search_result['expanded_from_url']
@@ -1307,6 +1457,7 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
     
     db = RecommendationsDatabase()
     nested_links_found = 0
+    nested_fetch_metrics = merge_count_maps(state.get('fetch_metrics'))
     
     logger.info(f"Retrieving nested links from {len(filtered_results)} pages...")
     
@@ -1322,7 +1473,11 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
             use_browser = db.needs_browser_rendering(domain)
             
             try:
-                page_text, soup, _, _ = fetch_webpage_content(parent_url, headers, use_browser=use_browser)
+                _, soup, _, _ = fetch_webpage_content_with_policy(parent_url, headers, db, use_browser=use_browser)
+            except TerminalFetchFailure as blocked_error:
+                nested_fetch_metrics = merge_count_maps(nested_fetch_metrics, blocked_error.metrics())
+                logger.info(f"Skipping nested link extraction for blocked page {parent_url}: {blocked_error.reason}")
+                continue
             except Exception as e:
                 logger.warning(f"Failed to fetch {parent_url} for nested link extraction: {e}")
                 continue
@@ -1384,6 +1539,7 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
     return {
         **state,
         "expanded_search_results": expanded_results,
+        "fetch_metrics": nested_fetch_metrics,
         "status": status_msg
     }
 
@@ -1472,17 +1628,38 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
             if completed_pages == total_pages or completed_pages % 5 == 0:
                 logger.info(f"Scrape progress: {completed_pages}/{total_pages} page(s) completed")
     
-    scraped_count = len(scraped_pages)
-    total_recommendations = sum(len(page.get('stock_recommendations', [])) for page in scraped_pages)
-    
+    fetch_metrics = merge_count_maps(
+        state.get('fetch_metrics'),
+        *[page.get('fetch_metrics') for page in scraped_pages],
+    )
+    extraction_metrics = merge_count_maps(
+        state.get('extraction_metrics'),
+        *[page.get('extraction_metrics') for page in scraped_pages],
+    )
+    scraped_count = sum(1 for page in scraped_pages if page.get('fetch_status') == 'ok')
+    total_recommendations = sum(
+        len(page.get('stock_recommendations', []))
+        for page in scraped_pages
+        if page.get('fetch_status') == 'ok'
+    )
+
     status_msg = f"Scraped {scraped_count} pages with {total_recommendations} recommendations"
     if skipped_count > 0:
         status_msg += f" (skipped {skipped_count} old/invalid results)"
+    blocked_pages = fetch_metrics.get('blocked_terminal_failures', 0) + fetch_metrics.get('blocked_cached_skips', 0)
+    if blocked_pages > 0:
+        status_msg += f", {blocked_pages} blocked pages"
+    if extraction_metrics.get('low_quality_filtered', 0) > 0:
+        status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
+    if extraction_metrics.get('hallucinated_tickers', 0) > 0:
+        status_msg += f", {extraction_metrics['hallucinated_tickers']} hallucinated skipped"
     
     return {
         **state,
         "skipped_from_scraping": skipped_from_scraping,  # Include modified results
         "scraped_pages": scraped_pages,
+        "fetch_metrics": fetch_metrics,
+        "extraction_metrics": extraction_metrics,
         "status": status_msg
     }
 
@@ -2225,10 +2402,19 @@ def output_node(state: WorkflowState) -> WorkflowState:
             saved_count += load_webpage_to_db(db, page_copy)
 
     skipped_count = len(skipped_recommendations)
+    fetch_metrics = state.get('fetch_metrics') or {}
+    extraction_metrics = state.get('extraction_metrics') or {}
     
     status_msg = f"Saved {saved_count} deduplicated stock recommendations"
     if skipped_count > 0:
         status_msg += f" (skipped {skipped_count} duplicate recommendations)"
+    blocked_pages = fetch_metrics.get('blocked_terminal_failures', 0) + fetch_metrics.get('blocked_cached_skips', 0)
+    if blocked_pages > 0:
+        status_msg += f", {blocked_pages} blocked pages"
+    if extraction_metrics.get('low_quality_filtered', 0) > 0:
+        status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
+    if extraction_metrics.get('hallucinated_tickers', 0) > 0:
+        status_msg += f", {extraction_metrics['hallucinated_tickers']} hallucinated skipped"
     
     return {
         **state,

@@ -94,7 +94,7 @@ class TestExtractStockRecommendations:
         )
     
     def test_extract_from_homepage(self, morningstar_homepage_data, mock_llm_response_homepage):
-        """Test extraction from Morningstar homepage with brief mention of AMD."""
+        """Thin homepage mentions should be filtered before persistence."""
         url = morningstar_homepage_data["url"]
         title = morningstar_homepage_data["webpage_title"]
         page_text = morningstar_homepage_data["page_text"]
@@ -109,22 +109,18 @@ class TestExtractStockRecommendations:
             mock_openai.return_value = mock_llm
             
             # Call the function
-            recommendations = extract_stock_recommendations_with_llm(url, title, page_text, page_date)
+            recommendations, metrics = extract_stock_recommendations_with_llm(
+                url,
+                title,
+                page_text,
+                page_date,
+                return_metrics=True,
+            )
             
             # Assertions
-            assert len(recommendations) == 1
-            
-            amd_rec = recommendations[0]
-            assert amd_rec["ticker"] == "AMD"
-            assert amd_rec["exchange"] == "NASDAQ"
-            assert amd_rec["currency"] == "N/A"
-            assert amd_rec["stock_name"] == "Advanced Micro Devices, Inc."
-            assert amd_rec["rating"] == 4  # Buy rating
-            assert amd_rec["analysis_date"] == "2025-11-17"
-            assert amd_rec["quality_score"] == 10  # Low quality: 9 words, no rating, brief reasoning
-            assert amd_rec["quality_description_words"] == 9
-            assert amd_rec["quality_has_rating"] is False
-            assert amd_rec["quality_reasoning_level"] == 1
+            assert recommendations == []
+            assert metrics["low_quality_filtered"] == 1
+            assert metrics["hallucinated_tickers"] == 0
     
     def test_extract_from_amd_article(self, morningstar_amd_article_data, mock_llm_response_amd_article):
         """Test extraction from detailed AMD article with 3-star Morningstar rating."""
@@ -195,10 +191,87 @@ class TestExtractStockRecommendations:
             mock_openai.return_value = mock_llm
             
             # Call the function
-            recommendations = extract_stock_recommendations_with_llm(url, title, page_text, page_date)
+            recommendations, metrics = extract_stock_recommendations_with_llm(
+                url,
+                title,
+                page_text,
+                page_date,
+                return_metrics=True,
+            )
             
             # Should filter out the hallucinated ticker
             assert len(recommendations) == 0
+            assert metrics["hallucinated_tickers"] == 1
+
+    def test_return_metrics_tracks_kept_and_filtered_candidates(self, morningstar_amd_article_data):
+        """Extraction metrics should count hallucinated and low-quality candidates alongside valid ones."""
+        url = morningstar_amd_article_data["url"]
+        title = morningstar_amd_article_data["webpage_title"]
+        page_text = morningstar_amd_article_data["page_text"]
+        page_date = datetime.strptime(morningstar_amd_article_data["webpage_date"], "%Y-%m-%d")
+
+        mock_response = StockRecommendationsResponse(
+            analysis_date="2025-11-12",
+            tickers=[
+                StockRecommendation(
+                    ticker="AMD",
+                    exchange="NASDAQ",
+                    stock_name="Advanced Micro Devices, Inc.",
+                    rating=3,
+                    fair_price=270,
+                    recommendation_text="Detailed AMD analysis with fair value and explicit conviction.",
+                    quality=RecommendationQuality(
+                        description_word_count=200,
+                        has_explicit_rating=True,
+                        reasoning_detail_level=3,
+                    ),
+                ),
+                StockRecommendation(
+                    ticker="NVDA",
+                    exchange="NASDAQ",
+                    stock_name="NVIDIA Corporation",
+                    rating=4,
+                    recommendation_text="Not actually present in the article.",
+                    quality=RecommendationQuality(
+                        description_word_count=120,
+                        has_explicit_rating=True,
+                        reasoning_detail_level=2,
+                    ),
+                ),
+                StockRecommendation(
+                    ticker="AMD",
+                    exchange="NASDAQ",
+                    stock_name="Advanced Micro Devices, Inc.",
+                    rating=4,
+                    recommendation_text="Brief AMD mention.",
+                    quality=RecommendationQuality(
+                        description_word_count=12,
+                        has_explicit_rating=False,
+                        reasoning_detail_level=1,
+                    ),
+                ),
+            ],
+        )
+
+        with patch('recommendations.workflow.ChatOpenAI') as mock_openai:
+            mock_llm = Mock()
+            mock_structured_llm = Mock()
+            mock_structured_llm.invoke.return_value = mock_response
+            mock_llm.with_structured_output.return_value = mock_structured_llm
+            mock_openai.return_value = mock_llm
+
+            recommendations, metrics = extract_stock_recommendations_with_llm(
+                url,
+                title,
+                page_text,
+                page_date,
+                return_metrics=True,
+            )
+
+        assert len(recommendations) == 1
+        assert recommendations[0]["ticker"] == "AMD"
+        assert metrics["hallucinated_tickers"] == 1
+        assert metrics["low_quality_filtered"] == 1
     
     def test_quality_score_calculation(self, morningstar_amd_article_data, mock_llm_response_amd_article):
         """Test that quality score is calculated correctly from LLM components."""

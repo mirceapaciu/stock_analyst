@@ -1174,6 +1174,22 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
     
     try:
         page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=use_browser)
+    except ValueError as e:
+        error_text = str(e)
+        if "Brotli-compressed" in error_text and not use_browser:
+            logger.warning(f"Brotli encoding issue for {url}, retrying with browser rendering")
+            try:
+                page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
+                logger.info(f"Browser rendering successful for {domain}, updating database")
+                db.upsert_website(domain, is_usable=1, requires_browser=1)
+            except Exception as browser_error:
+                logger.error(f"Browser rendering also failed for {url}: {browser_error}")
+                logger.warning(f"Marking domain {domain} as unusable")
+                db.upsert_website(domain, is_usable=0)
+                return None
+        else:
+            logger.error(f"Failed to fetch {url}: {e}")
+            return None
     except requests.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 403:
             if not use_browser:

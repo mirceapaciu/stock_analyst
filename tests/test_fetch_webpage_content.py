@@ -3,12 +3,15 @@
 import pytest
 import sys
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import MagicMock, patch
+
+from bs4 import BeautifulSoup
 
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from recommendations.workflow import fetch_webpage_content
+from recommendations.workflow import fetch_webpage_content, scrape_single_page
 
 
 def _make_mock_response(content: bytes, content_encoding: str = "", status_code: int = 200):
@@ -103,3 +106,81 @@ class TestAcceptEncodingHeaders:
         assert "gzip, deflate, br" not in source, (
             "scrape_node must not advertise Brotli support"
         )
+
+    def test_single_url_runner_headers_do_not_advertise_brotli(self):
+        """Single URL runner must not include 'br' in Accept-Encoding."""
+        runner_file = Path(__file__).parent.parent / "scripts" / "run_recommendation_workflow_for_url.py"
+        source = runner_file.read_text(encoding="utf-8")
+        assert '"Accept-Encoding": "gzip, deflate"' in source
+        assert '"Accept-Encoding": "gzip, deflate, br"' not in source
+
+    def test_rescrape_runner_headers_do_not_advertise_brotli(self):
+        """Rescrape script must not include 'br' in Accept-Encoding."""
+        runner_file = Path(__file__).parent.parent / "scripts" / "rescrape_webpage_to_pdf.py"
+        source = runner_file.read_text(encoding="utf-8")
+        assert "'Accept-Encoding': 'gzip, deflate'" in source
+        assert "'Accept-Encoding': 'gzip, deflate, br'" not in source
+
+
+class TestScrapeSinglePageBrotliFallback:
+    """Regression tests for BUG-002 ValueError handling in scrape_single_page."""
+
+    def test_brotli_value_error_retries_with_browser(self):
+        """On Brotli ValueError in plain fetch, scrape_single_page should retry with browser."""
+        search_result = {
+            "href": "https://www.fool.com/investing/2026/03/28/example/",
+            "title": "Example title",
+            "excerpt_date": "2026-03-28",
+            "is_tracked_stock_search": False,
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+
+        db = MagicMock()
+        db.needs_browser_rendering.return_value = False
+
+        html = "<html><body><article><p>Readable stock article text</p></article></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content",
+            side_effect=[
+                ValueError("Server returned Brotli-compressed content for https://www.fool.com/investing/2026/03/28/example/"),
+                ("Readable stock article text", soup, html, b"%PDF-1.4"),
+            ],
+        ) as mock_fetch, patch(
+            "recommendations.workflow.extract_date_from_webpage",
+            return_value=datetime(2026, 3, 28),
+        ), patch(
+            "recommendations.workflow.extract_stock_recommendations_with_llm",
+            return_value=[],
+        ):
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["page_text"] == "Readable stock article text"
+        assert result["stock_recommendations"] == []
+        assert mock_fetch.call_count == 2
+        db.upsert_website.assert_called_with("www.fool.com", is_usable=1, requires_browser=1)
+
+    def test_brotli_value_error_does_not_crash_when_browser_retry_fails(self):
+        """If browser retry fails too, scrape_single_page should return None (not raise)."""
+        search_result = {
+            "href": "https://www.fool.com/investing/2026/03/28/example/",
+            "title": "Example title",
+            "excerpt_date": "2026-03-28",
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+
+        db = MagicMock()
+        db.needs_browser_rendering.return_value = False
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content",
+            side_effect=[
+                ValueError("Server returned Brotli-compressed content for https://www.fool.com/investing/2026/03/28/example/"),
+                RuntimeError("playwright failed"),
+            ],
+        ):
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is None

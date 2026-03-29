@@ -78,6 +78,12 @@ Run one tracked batch manually:
 uv run python scripts/run_tracked_stock_batch.py
 ```
 
+Refresh stale market prices across all recommended stocks:
+
+```bash
+uv run python scripts/update_stale_market_prices.py
+```
+
 Run both schedules in-process with APScheduler:
 
 ```bash

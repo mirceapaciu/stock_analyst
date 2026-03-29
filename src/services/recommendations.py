@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterable, Set
 from datetime import date
 import re
 from repositories.recommendations_db import RecommendationsDatabase
@@ -10,6 +10,52 @@ from recommendations.fmp_client import FMPClient
 from config import RECOMMENDATIONS_DB_PATH, DB_PATH, FMP_API_KEY, FINNHUB_API_KEY
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_ticker_set(tickers: Optional[Iterable[str]]) -> Set[str]:
+    """Normalize tickers to uppercase, trimmed symbol set."""
+    if tickers is None:
+        return set()
+
+    normalized = set()
+    for ticker in tickers:
+        cleaned = str(ticker or "").strip().upper()
+        if cleaned:
+            normalized.add(cleaned)
+    return normalized
+
+
+def collect_workflow_recommendation_tickers(workflow_result: Optional[Dict]) -> Set[str]:
+    """Extract ticker symbols from workflow output pages.
+
+    The workflow stores extracted recommendations in ``deduplicated_pages``.
+    If that collection is empty, this falls back to ``scraped_pages``.
+    """
+    if not isinstance(workflow_result, dict):
+        return set()
+
+    collected: Set[str] = set()
+
+    pages = workflow_result.get("deduplicated_pages") or []
+    for page in pages:
+        recommendations = (page or {}).get("stock_recommendations") or []
+        for recommendation in recommendations:
+            ticker = str((recommendation or {}).get("ticker") or "").strip().upper()
+            if ticker:
+                collected.add(ticker)
+
+    if collected:
+        return collected
+
+    fallback_pages = workflow_result.get("scraped_pages") or []
+    for page in fallback_pages:
+        recommendations = (page or {}).get("stock_recommendations") or []
+        for recommendation in recommendations:
+            ticker = str((recommendation or {}).get("ticker") or "").strip().upper()
+            if ticker:
+                collected.add(ticker)
+
+    return collected
 
 
 def _symbol_base(symbol: str) -> str:
@@ -472,7 +518,12 @@ def get_recommendation_summary() -> Dict:
     }
 
 
-def update_market_data_for_recommended_stocks(force: bool = False, only_favorite_stocks: bool = False, db_path: str = RECOMMENDATIONS_DB_PATH) -> Dict[str, int]:
+def update_market_data_for_recommended_stocks(
+    force: bool = False,
+    only_favorite_stocks: bool = False,
+    workflow_tickers: Optional[Iterable[str]] = None,
+    db_path: str = RECOMMENDATIONS_DB_PATH,
+) -> Dict[str, int]:
     """Update market data for recommended stocks with stale market_date.
     
     This service layer function orchestrates:
@@ -483,6 +534,7 @@ def update_market_data_for_recommended_stocks(force: bool = False, only_favorite
     Args:
         force: If True, refresh all stocks. If False, only refresh stale data (>1 day old)
         only_favorite_stocks: If True, only update stocks that are in favorites
+        workflow_tickers: Optional iterable of tickers to limit updates to workflow stocks only
         db_path: Path to recommendations database
         
     Returns:
@@ -506,6 +558,14 @@ def update_market_data_for_recommended_stocks(force: bool = False, only_favorite
             stocks_to_update = [
                 stock for stock in stocks_to_update 
                 if stock['stock_id'] in favorite_stock_ids
+            ]
+
+        # Optionally scope updates to tickers produced in the current workflow run.
+        if workflow_tickers is not None:
+            workflow_ticker_set = _normalize_ticker_set(workflow_tickers)
+            stocks_to_update = [
+                stock for stock in stocks_to_update
+                if str(stock.get('ticker') or '').strip().upper() in workflow_ticker_set
             ]
         
         if not stocks_to_update:

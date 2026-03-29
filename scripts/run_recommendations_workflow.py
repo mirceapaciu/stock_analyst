@@ -11,7 +11,10 @@ src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from recommendations.workflow import create_workflow
-from services.recommendations import update_market_data_for_recommended_stocks
+from services.recommendations import (
+    update_market_data_for_recommended_stocks,
+    collect_workflow_recommendation_tickers,
+)
 from repositories.recommendations_db import RecommendationsDatabase
 from utils.logger import setup_logging
 from utils.logger import save_workflow_state_to_json
@@ -142,8 +145,11 @@ def run_recommendations_workflow():
         
         # Update market data for recommended stocks
         try:
-            logger.info("Updating market data for recommended stocks...")
-            update_result = update_market_data_for_recommended_stocks()
+            workflow_tickers = collect_workflow_recommendation_tickers(result)
+            logger.info(
+                f"Updating market data for workflow stocks only ({len(workflow_tickers)} ticker(s))..."
+            )
+            update_result = update_market_data_for_recommended_stocks(workflow_tickers=workflow_tickers)
             logger.info(f"Market data updated: {update_result['updated']} stocks updated, "
                        f"{update_result['failed']} failed, {update_result['skipped']} skipped")
         except Exception as e:

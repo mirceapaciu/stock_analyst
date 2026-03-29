@@ -21,7 +21,10 @@ from config import (
 )
 from recommendations.workflow import create_workflow
 from repositories.recommendations_db import RecommendationsDatabase
-from services.recommendations import update_market_data_for_recommended_stocks
+from services.recommendations import (
+    update_market_data_for_recommended_stocks,
+    collect_workflow_recommendation_tickers,
+)
 from utils.logger import setup_logging, save_workflow_state_to_json
 
 setup_logging()
@@ -184,8 +187,11 @@ def run_tracked_stock_batch() -> int:
         logger.info(f"Tracked batch workflow state saved to: {state_file}")
 
         try:
-            logger.info("Updating market data for recommended stocks...")
-            update_result = update_market_data_for_recommended_stocks()
+            workflow_tickers = collect_workflow_recommendation_tickers(result)
+            logger.info(
+                f"Updating market data for workflow stocks only ({len(workflow_tickers)} ticker(s))..."
+            )
+            update_result = update_market_data_for_recommended_stocks(workflow_tickers=workflow_tickers)
             logger.info(
                 f"Market data update result: updated={update_result['updated']}, "
                 f"failed={update_result['failed']}, skipped={update_result['skipped']}"

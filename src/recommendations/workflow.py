@@ -1205,6 +1205,32 @@ def validate_ticker_in_text(ticker: str, text: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
+def extract_explicit_rating_from_text(text: str) -> Optional[int]:
+    """Extract explicit star or text rating from source text when present."""
+    import re
+
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return None
+
+    star_match = re.search(r"Morningstar\s+Rating\s*:\s*([★\u2605]{1,5})", normalized, re.IGNORECASE)
+    if star_match:
+        return len(star_match.group(1))
+
+    text_ratings = {
+        'strong buy': 5,
+        'buy': 4,
+        'hold': 3,
+        'sell': 2,
+        'strong sell': 1,
+    }
+    for rating_text, rating_value in text_ratings.items():
+        if re.search(rf"\b{re.escape(rating_text)}\b", normalized, re.IGNORECASE):
+            return rating_value
+
+    return None
+
+
 def calculate_recommendation_quality_score(quality: RecommendationQuality) -> int:
     """
     Calculate total quality score from LLM-extracted components.
@@ -1274,6 +1300,11 @@ def extract_stock_recommendations_with_llm(
             continue
 
         if validate_ticker_in_text(ticker_obj.ticker, page_text):
+            explicit_rating = extract_explicit_rating_from_text(f"{title}\n{page_text}")
+            if explicit_rating is not None:
+                ticker_obj.rating = explicit_rating
+                ticker_obj.quality.has_explicit_rating = True
+
             # Calculate quality score from LLM-extracted quality indicators
             quality_score = calculate_recommendation_quality_score(ticker_obj.quality)
             if quality_score < LOW_QUALITY_RECOMMENDATION_THRESHOLD:

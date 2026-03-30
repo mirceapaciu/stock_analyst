@@ -178,6 +178,43 @@ def merge_count_maps(*maps: Optional[Dict[str, int]]) -> Dict[str, int]:
     return merged
 
 
+def is_obvious_non_stock_url(url: str) -> bool:
+    """Return True when URL path strongly suggests non-stock detail content."""
+    from urllib.parse import urlparse
+    import re
+
+    parsed = urlparse(str(url or ""))
+    path = (parsed.path or "").lower()
+
+    blocked_segments = [
+        "fund",
+        "funds",
+        "etf",
+        "etfs",
+        "category",
+        "categories",
+    ]
+
+    for segment in blocked_segments:
+        if re.search(rf"(^|/)({re.escape(segment)})(/|$)", path):
+            return True
+
+    return False
+
+
+def has_ticker_like_evidence(title: str, snippet: str) -> bool:
+    """Detect ticker-like evidence from title/snippet text."""
+    import re
+
+    text = f"{title or ''} {snippet or ''}"
+    patterns = [
+        r"\(([A-Z]{1,6}(?:\.[A-Z]{1,4})?)\)",
+        r"\b(?:NYSE|NASDAQ|AMEX|TSX|LSE|XNAS|XNYS)\s*[:\-]\s*[A-Z]{1,6}(?:\.[A-Z]{1,4})?\b",
+        r"\b[A-Z]{1,6}(?:\.[A-Z]{1,4})?\s+stock\b",
+    ]
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
 def update_progress_if_available(state: WorkflowState, progress: int):
     """Update progress in database if process name is available.
     
@@ -586,6 +623,20 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
         href = r.get("href", "")
         body = r.get("body", "")
         existing_date = r.get("date", "")
+
+        # Pre-filter obvious non-stock URL categories before LLM calls.
+        if is_obvious_non_stock_url(href):
+            updated = dict(r)
+            updated["contains_stocks"] = False
+            updated["excerpt_date"] = existing_date or None
+            return updated
+
+        # In discovery mode, require ticker-like evidence in title/snippet before LLM call.
+        if workflow_mode == "discovery" and not has_ticker_like_evidence(title, body):
+            updated = dict(r)
+            updated["contains_stocks"] = False
+            updated["excerpt_date"] = existing_date or None
+            return updated
         
         if existing_date:
             prompt_text = get_analyze_search_result_prompt(title, href, body)
@@ -1541,6 +1592,9 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
             
             for nested_url, link_text in links_found:
                 if nested_url not in existing_urls:
+                    if is_obvious_non_stock_url(nested_url):
+                        continue
+
                     nested_result = {
                         'title': link_text,
                         'href': nested_url,

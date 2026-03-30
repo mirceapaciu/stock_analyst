@@ -22,6 +22,8 @@ from config import DB_PATH
 class StockRepository:
     """Repository for stock financial data database operations using DuckDB."""
     
+    db_is_initialized = False  # Class variable to track if DB has been initialized
+
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self._conn = None
@@ -35,12 +37,15 @@ class StockRepository:
             if s3.s3_client:
                 logger.info(f"Checking S3 for existing database: {os.path.basename(db_path)}")
                 s3.sync_database_from_s3(db_path)
-        
-        # FIXME: This is needed only at the start of the application
-        # self._ensure_tables_exist()
+
+        # Ensure schema exists for fresh environments
+        self._ensure_tables_exist()
     
     def _ensure_tables_exist(self):
         """Ensure all required tables exist in the database."""
+        if StockRepository.db_is_initialized:
+            return
+
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -77,6 +82,8 @@ class StockRepository:
                 
         except Exception as e:
             logger.warning(f"Could not ensure tables exist: {e}")
+        finally:
+            StockRepository.db_is_initialized = True
     
     def _get_connection(self) -> duckdb.DuckDBPyConnection:
         """Get or create database connection."""

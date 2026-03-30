@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from services.valuation import get_dcf_valuation, print_dcf_analysis, calculate_historical_fcf_growth_rates
 
 
+@pytest.mark.integration
 def test_dcf_valuation_msft():
     """Test DCF valuation for Microsoft (MSFT)."""
     # Perform DCF valuation
@@ -44,6 +45,7 @@ def test_dcf_valuation_msft():
     print_dcf_analysis(result)
 
 
+@pytest.mark.integration
 def test_dcf_valuation_custom_parameters():
     """Test DCF valuation with custom parameters."""
     # Define test parameters once
@@ -76,6 +78,7 @@ def test_dcf_valuation_custom_parameters():
     print_dcf_analysis(result)
 
 
+@pytest.mark.integration
 def test_dcf_valuation_negative_upside():
     """Test DCF valuation produces correct upside calculation."""
     result = get_dcf_valuation('MSFT', forecast_years=5)

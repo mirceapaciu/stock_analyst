@@ -1,0 +1,58 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Validate required API secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for key in OPENAI_API_KEY GOOGLE_API_KEY GOOGLE_CSE_ID FINNHUB_API_KEY FMP_API_KEY; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required secret: $key"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "One or more required secrets are missing. Configure repository or environment secrets before running integration tests."
+            exit 1
+          fi
+
+      - name: Run integration tests
+        run: uv run pytest -m integration

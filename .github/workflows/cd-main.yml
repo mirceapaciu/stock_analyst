@@ -1,0 +1,75 @@
+name: CD Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Production (in-prem self-hosted)
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    environment: production
+
+    env:
+      COMPOSE_FILE: docker-compose-deploy.yml
+      STOP_TIMEOUT: "45"
+      HEALTHCHECK_URL: http://127.0.0.1:8501/_stcore/health
+      HEALTHCHECK_RETRIES: "30"
+      HEALTHCHECK_SLEEP_SECONDS: "5"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Verify Docker and Compose are available
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker --version
+          docker compose version
+
+      - name: Pull latest images (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" pull || true
+
+      - name: Gracefully stop running services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" stop -t "$STOP_TIMEOUT" || true
+
+      - name: Deploy updated stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
+
+      - name: Wait for health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempt=1
+          until curl -fsS "$HEALTHCHECK_URL" >/dev/null; do
+            if [ "$attempt" -ge "$HEALTHCHECK_RETRIES" ]; then
+              echo "Health check failed after $HEALTHCHECK_RETRIES attempts: $HEALTHCHECK_URL"
+              docker compose -f "$COMPOSE_FILE" ps
+              docker compose -f "$COMPOSE_FILE" logs --tail 200
+              exit 1
+            fi
+            echo "Waiting for service health... attempt $attempt/$HEALTHCHECK_RETRIES"
+            attempt=$((attempt + 1))
+            sleep "$HEALTHCHECK_SLEEP_SECONDS"
+          done
+          echo "Deployment healthy."

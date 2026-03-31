@@ -58,7 +58,7 @@ REPUTABLE_SITES = [
     "morningstar.com",
     "finance.yahoo.com",
     "fool.com",
-    "zacks.com",
+    # "zacks.com", too many low quality pages
     "seekingalpha.com"
 ]
 

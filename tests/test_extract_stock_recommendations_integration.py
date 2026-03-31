@@ -42,7 +42,7 @@ class TestExtractStockRecommendationsIntegration:
         return {
             "url": "https://www.morningstar.com/stocks",
             "title": "Stocks, Economic Moats, Company Earnings, and Dividends ...",
-            "page_text": """Bella Albrecht Nov 17, 2025 Susan Dziubinski Nov 18, 2025 Tori Brovet Nov 18, 2025 David Sekera, CFA and Susan Dziubinski Nov 17, 2025 Bella Albrecht Nov 17, 2025 Cyclical Basic Materials −1.65% Consumer Cyclical −0.87% Financial Services −2.05% Real Estate −0.72% Sensitive Communication Services +0.39% Energy −1.88% Industrials −1.30% Technology −1.47% Defensive Consumer Defensive −0.65% Healthcare −0.03% Utilities +0.76% Featured Moat Stocks by Sector Moat Stocks by Style Undervalued Stocks By Sector Undervalued Stocks by Style Ambev SA ADR Bristol-Myers Squibb Co Clorox Co Vdwmgnx Gxgkx Yfrbdk M.J. Ldkhqm View Full List Adient PLC Akamai Technologies Inc Americold Realty Trust Inc Kyfh & Qhys Rkkjp Gm Wkmngz Gncplrhgvztvg Dkpvlb WZ Hbxbfgfstlb Hbp Tmjvj View Full List adidas AG ADR Adient PLC Adobe Inc Zbl Gxfgytzm ffh Bnzllwpdc Plqvjz Nfh Zqwjbxpk Snfxyh - Hthpv Tfdsjx Ftgxzfqsnndg Lgwm View Full List ABB Ltd ADR AbbVie Inc Accenture PLC Class A Fgtwh Cz Kqnmcsz Myzmkhsjcvln Xpjc Vsh Vskjtcrw dcj Ydxzbnbkf Wd View Full List Adobe Inc Air Products and Chemicals Inc Airbnb Inc Ordinary Shares - Class A Jsldzvs Yzxrq Mfskpsz Cbz PKHKXR Zntrqyxd Mhj Kxlmw PCV Klnpxksv Rwd Rtsjy GCM View Full List Jump-start your search with Investor's pre-built screens based on our analysts' stock research and ratings. View Free for 7 Days These 12 undervalued industrials stocks look attractive today. Tori Brovet Nov 17, 2025 Berkshire reports net sales of roughly $7.9 billion for the third quarter. Greggory Warren, CFA Nov 15, 2025 Plus, the full list of stocks bought and sold last quarter. Susan Dziubinski Nov 14, 2025 Albemarle stock jumps while Endava stock dips. Frank Lee Nov 14, 2025 We view this as an orderly, internally driven succession that maintains strategic continuity rather than signaling a shift in direction. Brett Husslein Nov 14, 2025 With outstanding long-term estimates, here's what we think of Nvidia stock. Brian Colello, CPA Nov 14, 2025 We think Tencent Holdings stock is moderately undervalued. Ivan Su Nov 14, 2025 The weakness was entirely in linear entertainment networks and theatrical films. Matthew Dolgin, CFA Nov 13, 2025 The crypto investment manager's revenue has been dropping, but its net income has increased. Michael Bodley Nov 13, 2025 We've raised our fair value estimate of Cisco stock. William Kerwin, CFA Nov 13, 2025 With reduced unit production costs and raised guidance, here's what we think of Albemarle's stock. Seth Goldstein, CFA Nov 13, 2025 This stock offers a reliable yield and upside potential backed by durable competitive advantages. Erin Lash, CFA Nov 13, 2025 These 10 undervalued REIT stocks look attractive today. Tori Brovet Nov 13, 2025 Challenges in today's credit markets could be canaries in the coal mine or red herrings. Dan Lefkovitz Nov 13, 2025 We've raised our fair value estimate of AMD stock. Brian Colello, CPA Nov 12, 2025 With shares richly valued, here's what we think of Home Depot stock. Jaime M. Katz, CFA Nov 12, 2025 These are the top dividend-paying stocks to buy today. Susan Dziubinski Nov 11, 2025 We've raised our fair value estimate of Oxy stock. Joshua Aguilar Nov 11, 2025 We think Paramount stock is moderately undervalued. Matthew Dolgin, CFA Nov 11, 2025 With results exceeding management's forecast for Q3, here's what we think of Uber stock. Mark Giarelli Nov 11, 2025""",
+            "page_text": """Bella Albrecht Nov 17, 2025 Susan Dziubinski Nov 18, 2025 Tori Brovet Nov 18, 2025 David Sekera, CFA and Susan Dziubinski Nov 17, 2025 Bella Albrecht Nov 17, 2025 Cyclical Basic Materials −1.65% Consumer Cyclical −0.87% Financial Services −2.05% Real Estate −0.72% Sensitive Communication Services +0.39% Energy −1.88% Industrials −1.30% Technology −1.47% Defensive Consumer Defensive −0.65% Healthcare −0.03% Utilities +0.76% Featured Moat Stocks by Sector Moat Stocks by Style Undervalued Stocks By Sector Undervalued Stocks by Style Ambev SA ADR Bristol-Myers Squibb Co Clorox Co Vdwmgnx Gxgkx Yfrbdk M.J. Ldkhqm View Full List Adient PLC Akamai Technologies Inc Americold Realty Trust Inc Kyfh & Qhys Rkkjp Gm Wkmngz Gncplrhgvztvg Dkpvlb WZ Hbxbfgfstlb Hbp Tmjvj View Full List adidas AG ADR Adient PLC Adobe Inc Zbl Gxfgytzm ffh Bnzllwpdc Plqvjz Nfh Zqwjbxpk Snfxyh - Hthpv Tfdsjx Ftgxzfqsnndg Lgwm View Full List ABB Ltd ADR AbbVie Inc Accenture PLC Class A Fgtwh Cz Kqnmcsz Myzmkhsjcvln Xpjc Vsh Vskjtcrw dcj Ydxzbnbkf Wd View Full List Adobe Inc Air Products and Chemicals Inc Airbnb Inc Ordinary Shares - Class A Jsldzvs Yzxrq Mfskpsz Cbz PKHKXR Zntrqyxd Mhj Kxlmw PCV Klnpxksv Rwd Rtsjy GCM View Full List Jump-start your search with Investor's pre-built screens based on our analysts' stock research and ratings. View Free for 7 Days These 12 undervalued industrials stocks look attractive today. Tori Brovet Nov 17, 2025 Berkshire reports net sales of roughly $7.9 billion for the third quarter. Greggory Warren, CFA Nov 15, 2025 Plus, the full list of stocks bought and sold last quarter. Susan Dziubinski Nov 14, 2025 Albemarle stock jumps while Endava stock dips. Frank Lee Nov 14, 2025 We view this as an orderly, internally driven succession that maintains strategic continuity rather than signaling a shift in direction. Brett Husslein Nov 14, 2025 Nvidia (NVDA) Buy - Fair Value Estimate $800. With outstanding long-term estimates, here's what we think of Nvidia stock. Nvidia dominates the AI accelerator market, with its H100 and B200 GPUs capturing over 80% of data center AI workloads. Demand from hyperscalers including Microsoft, Google, and Amazon remains robust, and the supply-demand imbalance is expected to persist through fiscal 2026. We model 55% revenue growth for fiscal 2025, driven by rapid data center expansion. Shares trade at a premium to peers, but we believe the premium is justified given Nvidia's dominant competitive position, pricing power, and significant barriers to entry for rivals. Brian Colello, CPA Nov 14, 2025 We think Tencent Holdings stock is moderately undervalued. Ivan Su Nov 14, 2025 The weakness was entirely in linear entertainment networks and theatrical films. Matthew Dolgin, CFA Nov 13, 2025 The crypto investment manager's revenue has been dropping, but its net income has increased. Michael Bodley Nov 13, 2025 We've raised our fair value estimate of Cisco stock. William Kerwin, CFA Nov 13, 2025 With reduced unit production costs and raised guidance, here's what we think of Albemarle's stock. Seth Goldstein, CFA Nov 13, 2025 This stock offers a reliable yield and upside potential backed by durable competitive advantages. Erin Lash, CFA Nov 13, 2025 These 10 undervalued REIT stocks look attractive today. Tori Brovet Nov 13, 2025 Challenges in today's credit markets could be canaries in the coal mine or red herrings. Dan Lefkovitz Nov 13, 2025 We've raised our fair value estimate of AMD stock. Brian Colello, CPA Nov 12, 2025 With shares richly valued, here's what we think of Home Depot stock. Jaime M. Katz, CFA Nov 12, 2025 These are the top dividend-paying stocks to buy today. Susan Dziubinski Nov 11, 2025 We've raised our fair value estimate of Oxy stock. Joshua Aguilar Nov 11, 2025 We think Paramount stock is moderately undervalued. Matthew Dolgin, CFA Nov 11, 2025 With results exceeding management's forecast for Q3, here's what we think of Uber stock. Mark Giarelli Nov 11, 2025""",
             "date": "2025-11-17"
         }
     
@@ -58,23 +58,31 @@ class TestExtractStockRecommendationsIntegration:
     
     @pytest.mark.slow
     def test_extract_from_morningstar_homepage_real_llm(self, morningstar_homepage_data):
-        """Test extraction from Morningstar homepage using real LLM - should find multiple stocks."""
+        """Test extraction from Morningstar homepage using real LLM.
+
+        The fixture includes a rich Nvidia (NVDA) paragraph to ensure at least one
+        recommendation passes the quality threshold. Other tickers appear only as
+        brief one-line teasers and are expected to be filtered out.
+        """
         url = morningstar_homepage_data["url"]
         title = morningstar_homepage_data["title"]
         page_text = morningstar_homepage_data["page_text"]
         page_date = datetime.strptime(morningstar_homepage_data["date"], "%Y-%m-%d")
         
-        # Make real LLM call
-        recommendations = extract_stock_recommendations_with_llm(url, title, page_text, page_date)
+        recommendations, metrics = extract_stock_recommendations_with_llm(
+            url, title, page_text, page_date, return_metrics=True
+        )
         
-        # Assertions - the LLM should find several stocks from the homepage
-        print(f"Found {len(recommendations)} recommendations:")
+        total_identified = len(recommendations) + metrics["low_quality_filtered"] + metrics["hallucinated_tickers"]
+        print(f"Tickers identified by LLM: {total_identified}")
+        print(f"  Passed quality filter: {len(recommendations)}")
+        print(f"  Filtered (low quality): {metrics['low_quality_filtered']}")
+        print(f"  Hallucinated: {metrics['hallucinated_tickers']}")
         for rec in recommendations:
-            print(f"  {rec['ticker']}: {rec['recommendation_text'][:50]}...")
-        
-        # Should find at least a few stocks (AMD, NVDA, CISCO, OXY, UBER, etc. are mentioned)
-        assert len(recommendations) >= 1, "Should find at least one stock recommendation"
-        
+            print(f"  {rec['ticker']}: rating={rec['rating']}, quality={rec['quality_score']}")
+
+        assert len(recommendations) >= 1, "Should find at least one stock recommendation passing quality threshold"
+
         # Verify structure of returned recommendations
         for rec in recommendations:
             assert "ticker" in rec

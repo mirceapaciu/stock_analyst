@@ -23,7 +23,7 @@ jobs:
     env:
       COMPOSE_FILE: docker-compose-deploy.yml
       STOP_TIMEOUT: "45"
-      HEALTHCHECK_URL: http://127.0.0.1:8501/_stcore/health
+      HEALTHCHECK_URL: http://127.0.0.1:8080/_stcore/health
       HEALTHCHECK_RETRIES: "30"
       HEALTHCHECK_SLEEP_SECONDS: "5"
 

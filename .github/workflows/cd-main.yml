@@ -38,11 +38,11 @@ jobs:
           docker --version
           docker compose version
 
-      - name: Pull latest images (if any)
+      - name: Build local deployment image
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f "$COMPOSE_FILE" pull || true
+          docker build -t stock-analysis-app:latest .
 
       - name: Gracefully stop running services
         shell: bash

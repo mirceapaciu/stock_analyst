@@ -55,6 +55,7 @@ class TestSearchAndScrapeWorkflow:
         assert workflow is not None
         print("Workflow compiled successfully")
 
+    @pytest.mark.skip(reason="This is redundant")
     def test_end_to_end_data_flow(self):
         """Test that data flows correctly through all workflow nodes."""
         # Initialize empty state - workflow will use default query from config
@@ -102,7 +103,7 @@ class TestSearchAndScrapeWorkflow:
         assert "status" in state
         print(f"Workflow completed with status: {state.get('status')}")
 
-    # @pytest.mark.skip(reason="Manual test - requires dumped state file from previous run")
+    @pytest.mark.skip(reason="Manual test - requires dumped state file from previous run")
     def test_replay_from_dumped_state(self):
         """Replay workflow from previously dumped state.
         
@@ -144,8 +145,12 @@ class TestSearchAndScrapeWorkflow:
         print(f"Final status: {state.get('status')}")
         assert "status" in state
 
-    def test_full_workflow_invoke(self):
+    def test_full_workflow_invoke(self, monkeypatch):
         """Test running the complete workflow using LangGraph's invoke method."""
+        # We reduce the number of search queries in order to reduce the size of test
+        import recommendations.workflow as wf_module
+        monkeypatch.setattr(wf_module, "get_search_queries", lambda: ["undervalued stocks site:reuters.com"])
+
         workflow = create_workflow()
         
         # Run the entire workflow

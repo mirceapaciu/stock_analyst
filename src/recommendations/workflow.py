@@ -178,6 +178,43 @@ def merge_count_maps(*maps: Optional[Dict[str, int]]) -> Dict[str, int]:
     return merged
 
 
+def is_obvious_non_stock_url(url: str) -> bool:
+    """Return True when URL path strongly suggests non-stock detail content."""
+    from urllib.parse import urlparse
+    import re
+
+    parsed = urlparse(str(url or ""))
+    path = (parsed.path or "").lower()
+
+    blocked_segments = [
+        "fund",
+        "funds",
+        "etf",
+        "etfs",
+        "category",
+        "categories",
+    ]
+
+    for segment in blocked_segments:
+        if re.search(rf"(^|/)({re.escape(segment)})(/|$)", path):
+            return True
+
+    return False
+
+
+def has_ticker_like_evidence(title: str, snippet: str) -> bool:
+    """Detect ticker-like evidence from title/snippet text."""
+    import re
+
+    text = f"{title or ''} {snippet or ''}"
+    patterns = [
+        r"\(([A-Z]{1,6}(?:\.[A-Z]{1,4})?)\)",
+        r"\b(?:NYSE|NASDAQ|AMEX|TSX|LSE|XNAS|XNYS)\s*[:\-]\s*[A-Z]{1,6}(?:\.[A-Z]{1,4})?\b",
+        r"\b[A-Z]{1,6}(?:\.[A-Z]{1,4})?\s+stock\b",
+    ]
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
 def update_progress_if_available(state: WorkflowState, progress: int):
     """Update progress in database if process name is available.
     
@@ -586,6 +623,20 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
         href = r.get("href", "")
         body = r.get("body", "")
         existing_date = r.get("date", "")
+
+        # Pre-filter obvious non-stock URL categories before LLM calls.
+        if is_obvious_non_stock_url(href):
+            updated = dict(r)
+            updated["contains_stocks"] = False
+            updated["excerpt_date"] = existing_date or None
+            return updated
+
+        # In discovery mode, require ticker-like evidence in title/snippet before LLM call.
+        if workflow_mode == "discovery" and not has_ticker_like_evidence(title, body):
+            updated = dict(r)
+            updated["contains_stocks"] = False
+            updated["excerpt_date"] = existing_date or None
+            return updated
         
         if existing_date:
             prompt_text = get_analyze_search_result_prompt(title, href, body)
@@ -1205,6 +1256,32 @@ def validate_ticker_in_text(ticker: str, text: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
+def extract_explicit_rating_from_text(text: str) -> Optional[int]:
+    """Extract explicit star or text rating from source text when present."""
+    import re
+
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return None
+
+    star_match = re.search(r"Morningstar\s+Rating\s*:\s*([★\u2605]{1,5})", normalized, re.IGNORECASE)
+    if star_match:
+        return len(star_match.group(1))
+
+    text_ratings = {
+        'strong buy': 5,
+        'buy': 4,
+        'hold': 3,
+        'sell': 2,
+        'strong sell': 1,
+    }
+    for rating_text, rating_value in text_ratings.items():
+        if re.search(rf"\b{re.escape(rating_text)}\b", normalized, re.IGNORECASE):
+            return rating_value
+
+    return None
+
+
 def calculate_recommendation_quality_score(quality: RecommendationQuality) -> int:
     """
     Calculate total quality score from LLM-extracted components.
@@ -1274,6 +1351,11 @@ def extract_stock_recommendations_with_llm(
             continue
 
         if validate_ticker_in_text(ticker_obj.ticker, page_text):
+            explicit_rating = extract_explicit_rating_from_text(f"{title}\n{page_text}")
+            if explicit_rating is not None:
+                ticker_obj.rating = explicit_rating
+                ticker_obj.quality.has_explicit_rating = True
+
             # Calculate quality score from LLM-extracted quality indicators
             quality_score = calculate_recommendation_quality_score(ticker_obj.quality)
             if quality_score < LOW_QUALITY_RECOMMENDATION_THRESHOLD:
@@ -1510,6 +1592,9 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
             
             for nested_url, link_text in links_found:
                 if nested_url not in existing_urls:
+                    if is_obvious_non_stock_url(nested_url):
+                        continue
+
                     nested_result = {
                         'title': link_text,
                         'href': nested_url,

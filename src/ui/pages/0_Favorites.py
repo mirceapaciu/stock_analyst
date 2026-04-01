@@ -36,6 +36,8 @@ from fin_config import (
 )
 from config import RECOMMENDATIONS_DB_PATH
 
+MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"
+
 
 def _format_score(value):
     if value is None:
@@ -120,7 +122,11 @@ with st.sidebar:
     if st.button("💰 Update Market Prices", width='stretch'):
         with st.spinner("Updating market prices..."):
             try:
-                result = update_market_data_for_recommended_stocks(force=True, only_favorite_stocks=True)
+                result = update_market_data_for_recommended_stocks(
+                    force=True,
+                    only_favorite_stocks=True,
+                    process_name=MARKET_REFRESH_PROCESS_NAME,
+                )
                 st.success(f"✅ Updated {result['updated']} stocks, {result['failed']} failed, {result['skipped']} skipped")
                 st.rerun()
             except ValueError as e:

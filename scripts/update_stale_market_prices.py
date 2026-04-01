@@ -13,6 +13,7 @@ from utils.logger import setup_logging
 
 setup_logging()
 logger = logging.getLogger("update_stale_market_prices")
+PROCESS_NAME = "market_price_refresh"
 
 
 def main() -> int:
@@ -20,7 +21,7 @@ def main() -> int:
     logger.info("Starting stale market price refresh for all recommended stocks")
 
     try:
-        result = update_market_data_for_recommended_stocks()
+        result = update_market_data_for_recommended_stocks(process_name=PROCESS_NAME)
         logger.info(
             "Stale market price refresh completed: "
             f"updated={result['updated']}, failed={result['failed']}, skipped={result['skipped']}"

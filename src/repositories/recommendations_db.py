@@ -1987,6 +1987,37 @@ class RecommendationsDatabase:
         return result is not None
 
     # Process tracking methods
+
+    def get_batch_schedule_status(self, workflow_type: str) -> Dict:
+        """Get persisted tracked-batch sweep status for a workflow type.
+
+        Args:
+            workflow_type: Workflow key in batch_schedule (for example, tracked_stock)
+
+        Returns:
+            Dictionary with batch schedule row or None if not found
+        """
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT workflow_type, batch_index, total_batches,
+                   sweep_started_at, last_batch_at, last_batch_status,
+                   consecutive_failures, sweep_completed_at
+            FROM batch_schedule
+            WHERE workflow_type = ?
+            """,
+            (workflow_type,),
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return dict(row)
+        return None
     
     def start_process(self, process_name: str) -> None:
         """Mark a process as started by upserting with current timestamp and NULL end_timestamp.

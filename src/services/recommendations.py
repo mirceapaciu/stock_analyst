@@ -523,6 +523,7 @@ def update_market_data_for_recommended_stocks(
     only_favorite_stocks: bool = False,
     workflow_tickers: Optional[Iterable[str]] = None,
     db_path: str = RECOMMENDATIONS_DB_PATH,
+    process_name: Optional[str] = None,
 ) -> Dict[str, int]:
     """Update market data for recommended stocks with stale market_date.
     
@@ -536,6 +537,7 @@ def update_market_data_for_recommended_stocks(
         only_favorite_stocks: If True, only update stocks that are in favorites
         workflow_tickers: Optional iterable of tickers to limit updates to workflow stocks only
         db_path: Path to recommendations database
+        process_name: Optional process name to track status in the process table
         
     Returns:
         Dictionary with counts: {'updated': int, 'failed': int, 'skipped': int}
@@ -549,87 +551,104 @@ def update_market_data_for_recommended_stocks(
     import finnhub
     
     with RecommendationsDatabase(db_path) as db:
-        # Get stocks needing refresh
-        stocks_to_update = db.get_stocks_needing_market_data_refresh(force=force)
-        
-        # Filter to only favorite stocks if requested
-        if only_favorite_stocks:
-            favorite_stock_ids = db.get_favorite_stock_ids()
-            stocks_to_update = [
-                stock for stock in stocks_to_update 
-                if stock['stock_id'] in favorite_stock_ids
-            ]
+        if process_name:
+            db.start_process(process_name)
 
-        # Optionally scope updates to tickers produced in the current workflow run.
-        if workflow_tickers is not None:
-            workflow_ticker_set = _normalize_ticker_set(workflow_tickers)
-            stocks_to_update = [
-                stock for stock in stocks_to_update
-                if str(stock.get('ticker') or '').strip().upper() in workflow_ticker_set
-            ]
-        
-        if not stocks_to_update:
-            return {'updated': 0, 'failed': 0, 'skipped': 0}
-        
-        # Initialize Finnhub client
-        finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY)
-        
-        updated_count = 0
-        failed_count = 0
-        skipped_count = 0
-        
-        for stock in stocks_to_update:
-            stock_id = stock['stock_id']
-            ticker = stock['ticker']
-            exchange = stock['exchange']
-            
-            # Finnhub quote works only with US stocks
-            if exchange not in ['NASDAQ', 'NYSE', 'AMEX', 'N/A']:
-                logger.info(f"Skipping {ticker} ({exchange}) - non-US exchange")
-                skipped_count += 1
-                continue
-            
-            try:
-                # Get quote from Finnhub with retry logic
-                quote_data = None
-                for attempt in range(2):
-                    try:
-                        quote_data = finnhub_client.quote(ticker)
-                        break
-                    except Exception as api_error:
-                        if attempt == 0:
-                            logger.warning(f"Finnhub API call failed for {ticker}, retrying in 60 seconds...")
-                            time.sleep(60)
-                        else:
-                            raise api_error
-                
-                if quote_data is None:
-                    logger.warning(f"Failed to get quote data for {ticker}")
+        try:
+            # Get stocks needing refresh
+            stocks_to_update = db.get_stocks_needing_market_data_refresh(force=force)
+
+            # Filter to only favorite stocks if requested
+            if only_favorite_stocks:
+                favorite_stock_ids = db.get_favorite_stock_ids()
+                stocks_to_update = [
+                    stock for stock in stocks_to_update
+                    if stock['stock_id'] in favorite_stock_ids
+                ]
+
+            # Optionally scope updates to tickers produced in the current workflow run.
+            if workflow_tickers is not None:
+                workflow_ticker_set = _normalize_ticker_set(workflow_tickers)
+                stocks_to_update = [
+                    stock for stock in stocks_to_update
+                    if str(stock.get('ticker') or '').strip().upper() in workflow_ticker_set
+                ]
+
+            if not stocks_to_update:
+                result = {'updated': 0, 'failed': 0, 'skipped': 0}
+                if process_name:
+                    db.end_process(process_name, 'COMPLETED')
+                return result
+
+            # Initialize Finnhub client
+            finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY)
+
+            updated_count = 0
+            failed_count = 0
+            skipped_count = 0
+
+            for stock in stocks_to_update:
+                stock_id = stock['stock_id']
+                ticker = stock['ticker']
+                exchange = stock['exchange']
+
+                # Finnhub quote works only with US stocks
+                if exchange not in ['NASDAQ', 'NYSE', 'AMEX', 'N/A']:
+                    logger.info(f"Skipping {ticker} ({exchange}) - non-US exchange")
+                    skipped_count += 1
+                    continue
+
+                try:
+                    # Get quote from Finnhub with retry logic
+                    quote_data = None
+                    for attempt in range(2):
+                        try:
+                            quote_data = finnhub_client.quote(ticker)
+                            break
+                        except Exception as api_error:
+                            if attempt == 0:
+                                logger.warning(f"Finnhub API call failed for {ticker}, retrying in 60 seconds...")
+                                time.sleep(60)
+                            else:
+                                raise api_error
+
+                    if quote_data is None:
+                        logger.warning(f"Failed to get quote data for {ticker}")
+                        failed_count += 1
+                        continue
+
+                    # Extract current price ('c' key)
+                    current_price = quote_data.get('c')
+
+                    if current_price is None or current_price == 0:
+                        logger.warning(f"No valid price data for {ticker}")
+                        failed_count += 1
+                        continue
+
+                    # Update the database via repository method
+                    today = date.today().strftime('%Y-%m-%d')
+                    db.update_stock_market_data(stock_id, current_price, today)
+
+                    updated_count += 1
+                    logger.info(f"Updated {ticker}: ${current_price}")
+
+                except Exception as e:
+                    logger.error(f"Error updating {ticker}: {e}")
                     failed_count += 1
                     continue
-                
-                # Extract current price ('c' key)
-                current_price = quote_data.get('c')
-                
-                if current_price is None or current_price == 0:
-                    logger.warning(f"No valid price data for {ticker}")
-                    failed_count += 1
-                    continue
-                
-                # Update the database via repository method
-                today = date.today().strftime('%Y-%m-%d')
-                db.update_stock_market_data(stock_id, current_price, today)
-                
-                updated_count += 1
-                logger.info(f"Updated {ticker}: ${current_price}")
-                
-            except Exception as e:
-                logger.error(f"Error updating {ticker}: {e}")
-                failed_count += 1
-                continue
-        
-        return {
-            'updated': updated_count,
-            'failed': failed_count,
-            'skipped': skipped_count
-        }
+
+            result = {
+                'updated': updated_count,
+                'failed': failed_count,
+                'skipped': skipped_count
+            }
+            if process_name:
+                db.end_process(process_name, 'COMPLETED')
+            return result
+        except Exception:
+            if process_name:
+                try:
+                    db.end_process(process_name, 'FAILED')
+                except Exception as process_error:
+                    logger.warning(f"Failed to mark process '{process_name}' as FAILED: {process_error}")
+            raise

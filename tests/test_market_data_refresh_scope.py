@@ -16,6 +16,7 @@ class DummyRecommendationsDatabase:
         self._stocks_to_update = stocks_to_update or []
         self._favorite_stock_ids = favorite_stock_ids or []
         self.updated_rows = []
+        self.process_events = []
 
     def __enter__(self):
         return self
@@ -31,6 +32,12 @@ class DummyRecommendationsDatabase:
 
     def update_stock_market_data(self, stock_id, market_price, market_date):
         self.updated_rows.append((stock_id, market_price, market_date))
+
+    def start_process(self, process_name):
+        self.process_events.append(("start", process_name))
+
+    def end_process(self, process_name, status="COMPLETED"):
+        self.process_events.append(("end", process_name, status))
 
 
 class FakeFinnhubClient:
@@ -126,3 +133,29 @@ def test_update_market_data_empty_workflow_tickers_updates_nothing(monkeypatch):
 
     assert result == {"updated": 0, "failed": 0, "skipped": 0}
     assert db.updated_rows == []
+
+
+def test_update_market_data_tracks_process_when_process_name_is_provided(monkeypatch):
+    db = DummyRecommendationsDatabase(
+        stocks_to_update=[
+            {"stock_id": 1, "ticker": "AAPL", "exchange": "NASDAQ", "market_date": None},
+        ]
+    )
+
+    monkeypatch.setattr(recommendation_service, "FINNHUB_API_KEY", "test-key")
+    monkeypatch.setattr(recommendation_service, "RecommendationsDatabase", lambda _db_path: db)
+    monkeypatch.setitem(
+        sys.modules,
+        "finnhub",
+        SimpleNamespace(Client=FakeFinnhubClient),
+    )
+
+    result = recommendation_service.update_market_data_for_recommended_stocks(
+        process_name="market_price_refresh"
+    )
+
+    assert result == {"updated": 1, "failed": 0, "skipped": 0}
+    assert db.process_events == [
+        ("start", "market_price_refresh"),
+        ("end", "market_price_refresh", "COMPLETED"),
+    ]

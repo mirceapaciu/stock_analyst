@@ -59,6 +59,33 @@ def _resolve_last_run(process_status: dict | None, fallback_timestamp: str | Non
     return "N/A"
 
 
+def _style_last_run_timestamp(column: pd.Series, metadata: pd.DataFrame) -> list[str]:
+    now_utc = pd.Timestamp.now(tz="UTC")
+    styles: list[str] = []
+
+    for row_index, value in column.items():
+        last_run_timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+        schedule_days = float(metadata.at[row_index, "_Schedule Days"])
+        raw_status = str(metadata.at[row_index, "_Raw Status"] or "").strip().upper()
+
+        if pd.isna(last_run_timestamp):
+            styles.append("background-color: #fee2e2; color: #7f1d1d;")
+            continue
+
+        freshness_threshold = now_utc - pd.to_timedelta(schedule_days, unit="D")
+
+        if last_run_timestamp >= freshness_threshold and raw_status != "STARTED":
+            styles.append("background-color: #dcfce7; color: #14532d;")
+        elif last_run_timestamp < freshness_threshold and raw_status == "STARTED":
+            styles.append("background-color: #fef9c3; color: #713f12;")
+        elif last_run_timestamp < freshness_threshold and raw_status != "STARTED":
+            styles.append("background-color: #fee2e2; color: #7f1d1d;")
+        else:
+            styles.append("")
+
+    return styles
+
+
 @st.cache_data(ttl=60)
 def load_job_dashboard_rows() -> list[dict]:
     with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
@@ -77,24 +104,38 @@ def load_job_dashboard_rows() -> list[dict]:
         tracked_status.get("status") if tracked_status else tracked_fallback_status
     )
 
+    discovery_schedule_days = DISCOVERY_INTERVAL_HOURS / 24.0
+    tracked_schedule_days = TRACKED_BATCH_INTERVAL_HOURS / 24.0
+    market_refresh_schedule_days = float(SWEEP_STALE_DAYS)
+
+    discovery_raw_status = discovery_status.get("status") if discovery_status else None
+    tracked_raw_status = tracked_status.get("status") if tracked_status else tracked_fallback_status
+    market_refresh_raw_status = market_refresh_status.get("status") if market_refresh_status else None
+
     return [
         {
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
             "Completion Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
-            "Schedule Frequency (days)": _format_schedule_days(DISCOVERY_INTERVAL_HOURS / 24.0),
+            "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
+            "_Raw Status": discovery_raw_status,
+            "_Schedule Days": discovery_schedule_days,
         },
         {
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
             "Completion Status": tracked_display_status,
-            "Schedule Frequency (days)": _format_schedule_days(TRACKED_BATCH_INTERVAL_HOURS / 24.0),
+            "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
+            "_Raw Status": tracked_raw_status,
+            "_Schedule Days": tracked_schedule_days,
         },
         {
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
             "Completion Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
-            "Schedule Frequency (days)": _format_schedule_days(float(SWEEP_STALE_DAYS)),
+            "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),
+            "_Raw Status": market_refresh_raw_status,
+            "_Schedule Days": market_refresh_schedule_days,
         },
     ]
 
@@ -113,15 +154,23 @@ with st.sidebar:
 rows = load_job_dashboard_rows()
 df = pd.DataFrame(rows)
 
+metadata_df = df[["_Raw Status", "_Schedule Days"]].copy()
+display_df = df.drop(columns=["_Raw Status", "_Schedule Days"])
+
 col1, col2, col3 = st.columns(3)
 with col1:
-    running_count = int((df["Completion Status"] == "Running").sum())
+    running_count = int((display_df["Completion Status"] == "Running").sum())
     st.metric("Running Jobs", running_count)
 with col2:
-    completed_count = int((df["Completion Status"] == "Completed").sum())
+    completed_count = int((display_df["Completion Status"] == "Completed").sum())
     st.metric("Completed Jobs", completed_count)
 with col3:
-    failed_count = int((df["Completion Status"] == "Failed").sum())
+    failed_count = int((display_df["Completion Status"] == "Failed").sum())
     st.metric("Failed Jobs", failed_count)
 
-st.dataframe(df, use_container_width=True, hide_index=True)
+styled_df = display_df.style.apply(
+    lambda column: _style_last_run_timestamp(column, metadata_df),
+    subset=["Last Run Timestamp"],
+)
+
+st.dataframe(styled_df, use_container_width=True, hide_index=True)

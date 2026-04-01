@@ -65,7 +65,7 @@ REPUTABLE_SITES = [
 # Tracked stock batch search settings (used by scheduler-driven tracked workflow).
 TRACKED_BATCH_SIZE = max(1, int(os.getenv("TRACKED_BATCH_SIZE", "27")))
 TRACKED_BATCH_MIN_RATING = min(5.0, max(1.0, float(os.getenv("TRACKED_BATCH_MIN_RATING", "4.0"))))
-TRACKED_BATCH_INTERVAL_HOURS = max(1, int(os.getenv("TRACKED_BATCH_INTERVAL_HOURS", "8")))
+TRACKED_BATCH_INTERVAL_HOURS = max(1, int(os.getenv("TRACKED_BATCH_INTERVAL_HOURS", "72")))  # Default to every 3 days for tracked batch workflow
 TRACKED_RESULT_AGE_DAYS = max(1, int(os.getenv("TRACKED_RESULT_AGE_DAYS", str(MAX_RESULT_AGE_DAYS))))
 DISCOVERY_INTERVAL_HOURS = max(
     1,

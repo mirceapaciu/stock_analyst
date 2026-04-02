@@ -189,3 +189,16 @@ class TestBatchSchedulerDatabase:
         assert row["workflow_type"] == "tracked_stock"
         assert row["last_batch_status"] == "COMPLETED"
         assert row["last_batch_at"] is not None
+
+    def test_touch_process_heartbeat_upserts_scheduler_liveness(self, tmp_path):
+        db = RecommendationsDatabase(str(tmp_path / "batch_scheduler_heartbeat.duckdb"))
+
+        db.touch_process_heartbeat("scheduler_heartbeat")
+
+        heartbeat_status = db.get_process_status("scheduler_heartbeat")
+
+        assert heartbeat_status is not None
+        assert heartbeat_status["process_name"] == "scheduler_heartbeat"
+        assert heartbeat_status["status"] == "HEARTBEAT"
+        assert heartbeat_status["start_timestamp"] is not None
+        assert heartbeat_status["end_timestamp"] is not None

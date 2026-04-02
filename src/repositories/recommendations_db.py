@@ -2080,6 +2080,29 @@ class RecommendationsDatabase:
         
         conn.commit()
         conn.close()
+
+    def touch_process_heartbeat(self, process_name: str, status: str = 'HEARTBEAT') -> None:
+        """Persist a liveness heartbeat timestamp for a long-running process.
+
+        Args:
+            process_name: Name of the process to track
+            status: Stored status label for the heartbeat row
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status)
+            VALUES (?, datetime('now'), datetime('now'), 100, ?)
+            ON CONFLICT(process_name) DO UPDATE SET
+                start_timestamp = datetime('now'),
+                end_timestamp = datetime('now'),
+                progress_pct = 100,
+                status = excluded.status
+        """, (process_name, status))
+
+        conn.commit()
+        conn.close()
     
     def get_process_status(self, process_name: str) -> Dict:
         """Get the status of a process.

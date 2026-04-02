@@ -27,6 +27,8 @@ DISCOVERY_PROCESS = "recommendations_workflow"
 TRACKED_PROCESS = "tracked_stock_batch"
 TRACKED_WORKFLOW_TYPE = "tracked_stock"
 MARKET_REFRESH_PROCESS = "market_price_refresh"
+SCHEDULER_HEARTBEAT_PROCESS = "scheduler_heartbeat"
+SCHEDULER_HEARTBEAT_STALE_MINUTES = 3
 
 
 def _format_schedule_days(days: float) -> str:
@@ -57,6 +59,31 @@ def _resolve_last_run(process_status: dict | None, fallback_timestamp: str | Non
         return str(fallback_timestamp)
 
     return "N/A"
+
+
+def _resolve_heartbeat_timestamp(process_status: dict | None) -> str:
+    if not process_status:
+        return "N/A"
+
+    return process_status.get("end_timestamp") or process_status.get("start_timestamp") or "N/A"
+
+
+def _get_scheduler_heartbeat_state(process_status: dict | None) -> tuple[str, str, str]:
+    heartbeat_timestamp = _resolve_heartbeat_timestamp(process_status)
+    parsed_timestamp = pd.to_datetime(heartbeat_timestamp, errors="coerce", utc=True)
+
+    if pd.isna(parsed_timestamp):
+        return "missing", "Scheduler heartbeat missing", "No heartbeat recorded yet"
+
+    heartbeat_threshold = pd.Timestamp.now(tz="UTC") - pd.to_timedelta(
+        SCHEDULER_HEARTBEAT_STALE_MINUTES,
+        unit="m",
+    )
+
+    if parsed_timestamp >= heartbeat_threshold:
+        return "active", "Scheduler heartbeat active", f"Last heartbeat: {heartbeat_timestamp}"
+
+    return "stale", "Scheduler heartbeat stale", f"Last heartbeat: {heartbeat_timestamp}"
 
 
 def _style_last_run_timestamp(column: pd.Series, metadata: pd.DataFrame) -> list[str]:
@@ -92,6 +119,7 @@ def load_job_dashboard_rows() -> list[dict]:
         discovery_status = db.get_process_status(DISCOVERY_PROCESS)
         tracked_status = db.get_process_status(TRACKED_PROCESS)
         market_refresh_status = db.get_process_status(MARKET_REFRESH_PROCESS)
+        scheduler_heartbeat_status = db.get_process_status(SCHEDULER_HEARTBEAT_PROCESS)
         tracked_batch_status = db.get_batch_schedule_status(TRACKED_WORKFLOW_TYPE)
 
     tracked_fallback_status = None
@@ -137,7 +165,7 @@ def load_job_dashboard_rows() -> list[dict]:
             "_Raw Status": market_refresh_raw_status,
             "_Schedule Days": market_refresh_schedule_days,
         },
-    ]
+    ], scheduler_heartbeat_status
 
 
 st.title("🧭 Job Dashboard")
@@ -152,7 +180,19 @@ with st.sidebar:
         st.rerun()
 
 rows = load_job_dashboard_rows()
+rows, scheduler_heartbeat_status = load_job_dashboard_rows()
 df = pd.DataFrame(rows)
+
+heartbeat_state, heartbeat_title, heartbeat_message = _get_scheduler_heartbeat_state(
+    scheduler_heartbeat_status
+)
+
+if heartbeat_state == "active":
+    st.success(f"{heartbeat_title}. {heartbeat_message}")
+elif heartbeat_state == "stale":
+    st.error(f"{heartbeat_title}. {heartbeat_message}")
+else:
+    st.error(f"{heartbeat_title}. {heartbeat_message}")
 
 metadata_df = df[["_Raw Status", "_Schedule Days"]].copy()
 display_df = df.drop(columns=["_Raw Status", "_Schedule Days"])

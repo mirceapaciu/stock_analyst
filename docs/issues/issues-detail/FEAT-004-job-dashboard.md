@@ -86,10 +86,13 @@ All data is queryable via `RecommendationsDatabase` class:
   - last run timestamp
   - completion status
   - schedule frequency in days
+- Dashboard also shows a scheduler heartbeat status banner based on a persisted heartbeat row
 - Data source implemented via:
   - `process` table (`recommendations_workflow`, `tracked_stock_batch`, `market_price_refresh`)
+  - `process` table heartbeat row (`scheduler_heartbeat`)
   - `batch_schedule` table fallback for tracked stock last batch metadata
 - Added repository method `get_batch_schedule_status(workflow_type)`
+- Added repository method `touch_process_heartbeat(process_name)`
 - Added process tracking for market refresh runs by extending
   `update_market_data_for_recommended_stocks(..., process_name=...)`
 - Wired market refresh process tracking from:
@@ -97,6 +100,7 @@ All data is queryable via `RecommendationsDatabase` class:
   - `scripts/run_recommendations_workflow.py`
   - `scripts/run_tracked_stock_batch.py`
   - UI buttons in Favorites and Recommendations pages
+- Wired scheduler heartbeat writes from `scripts/scheduler.py` on startup and every minute
 
 ## Validation
 - Unit tests passed:

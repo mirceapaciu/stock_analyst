@@ -14,8 +14,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-ci-dev:
+    name: Verify CI Dev Status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI Dev workflow status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const headRef = context.payload.pull_request.head.ref;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            
+            // Get recent workflow runs for CI Dev on the source branch
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: owner,
+              repo: repo,
+              workflow_id: 'ci-dev.yml',
+              branch: headRef,
+              status: 'completed'
+            });
+            
+            if (runs.data.workflow_runs.length === 0) {
+              throw new Error(`No completed CI Dev runs found on branch '${headRef}'. Please ensure CI Dev passes on your branch first.`);
+            }
+            
+            const latestRun = runs.data.workflow_runs[0];
+            if (latestRun.conclusion !== 'success') {
+              throw new Error(`Latest CI Dev run on branch '${headRef}' has status '${latestRun.conclusion}'. Integration tests require CI Dev to be successful.`);
+            }
+            
+            core.info(`CI Dev is successful on branch '${headRef}'. Proceeding with integration tests.`);
+
   integration-tests:
     name: Run Integration Tests
+    needs: check-ci-dev
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

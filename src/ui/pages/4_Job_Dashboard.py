@@ -1,7 +1,10 @@
 """Streamlit page for viewing scheduled job dashboard status."""
 
 import json
+import os
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +36,20 @@ SCHEDULER_HEARTBEAT_STALE_MINUTES = 3
 SCHEDULER_NEXT_RUN_DISCOVERY_PROCESS = "scheduler_next_run_discovery_workflow"
 SCHEDULER_NEXT_RUN_TRACKED_PROCESS = "scheduler_next_run_tracked_stock_batch"
 SCHEDULER_NEXT_RUN_MARKET_PROCESS = "scheduler_next_run_market_price_refresh"
+JOB_CONFIG_BY_TYPE = {
+    "Stock recommendation discovery": {
+        "script": "run_recommendations_workflow.py",
+        "process": DISCOVERY_PROCESS,
+    },
+    "Tracked Stock recommendation": {
+        "script": "run_tracked_stock_batch.py",
+        "process": TRACKED_PROCESS,
+    },
+    "Market price refresh": {
+        "script": "update_stale_market_prices.py",
+        "process": MARKET_REFRESH_PROCESS,
+    },
+}
 
 
 def _format_schedule_days(days: float) -> str:
@@ -91,6 +108,78 @@ def _extract_job_pid(process_status: dict | None) -> str:
         pass
 
     return "N/A"
+
+
+def _parse_pid(pid_value: str | None) -> int | None:
+    if not pid_value:
+        return None
+    raw_pid = str(pid_value).strip()
+    if not raw_pid or raw_pid.upper() == "N/A":
+        return None
+    try:
+        return int(raw_pid)
+    except ValueError:
+        return None
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _build_job_process_message(pid: int, script_name: str) -> str:
+    return json.dumps(
+        {
+            "pid": pid,
+            "script": script_name,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_by": "dashboard",
+        },
+        separators=(",", ":"),
+    )
+
+
+def _run_job_now(job_type: str, current_pid: str | None = None) -> tuple[bool, str]:
+    job_config = JOB_CONFIG_BY_TYPE.get(job_type)
+    if not job_config:
+        return False, f"Unknown job type: {job_type}"
+
+    process_name = job_config["process"]
+    script_name = job_config["script"]
+    script_path = Path(__file__).resolve().parents[3] / "scripts" / script_name
+    if not script_path.exists():
+        return False, f"Job script not found: {script_path}"
+
+    with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+        status = db.get_process_status(process_name)
+        if status and str(status.get("status") or "").strip().upper() == "STARTED":
+            status_pid = _parse_pid(_extract_job_pid(status))
+            selected_pid = _parse_pid(current_pid)
+            effective_pid = status_pid or selected_pid
+
+            if effective_pid is not None and _is_pid_alive(effective_pid):
+                return False, f"{job_type} is already running (PID {effective_pid})"
+
+            db.end_process(
+                process_name,
+                "FAILED",
+                f"Recovered stale STARTED state before manual run; previous PID={effective_pid}",
+            )
+
+        process = subprocess.Popen(
+            [sys.executable, str(script_path)],
+            cwd=str(script_path.parent),
+        )
+        db.start_process(process_name, message=_build_job_process_message(process.pid, script_name))
+
+    return True, f"Started {job_type} (PID {process.pid})"
 
 
 def _resolve_scheduler_next_run(process_status: dict | None) -> str:
@@ -279,4 +368,42 @@ styled_df = display_df.style.apply(
     subset=["Last Run Timestamp"],
 )
 
-st.dataframe(styled_df, width='stretch', hide_index=True)
+selection_event = st.dataframe(
+    display_df,
+    width="stretch",
+    hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row",
+)
+
+selected_row = None
+selected_indices: list[int] = []
+if selection_event is not None:
+    selection_payload = getattr(selection_event, "selection", None)
+    if isinstance(selection_payload, dict):
+        selected_indices = list(selection_payload.get("rows") or [])
+    elif selection_payload is not None:
+        selected_indices = list(getattr(selection_payload, "rows", []) or [])
+
+if selected_indices:
+    selected_row = display_df.iloc[selected_indices[0]].to_dict()
+    st.caption(
+        f"Selected job: {selected_row['Job Type']} | "
+        f"Status: {selected_row['Status']} | "
+        f"PID: {selected_row['Job PID']}"
+    )
+
+selected_is_running = bool(selected_row and selected_row.get("Status") == "Running")
+run_job_disabled = selected_row is None or selected_is_running
+
+if st.button("Run job", width="stretch", disabled=run_job_disabled):
+    started, message = _run_job_now(
+        selected_row["Job Type"],
+        selected_row.get("Job PID"),
+    )
+    if started:
+        st.success(message)
+        st.cache_data.clear()
+        st.rerun()
+    else:
+        st.warning(message)

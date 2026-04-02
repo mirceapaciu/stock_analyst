@@ -22,6 +22,8 @@ from services.recommendations import update_market_data_for_recommended_stocks
 from services.valuation import get_dcf_valuation
 from config import RECOMMENDATIONS_DB_PATH
 
+MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"
+
 st.set_page_config(page_title="Stock Recommendations", page_icon="📊", layout="wide")
 
 def startup_cleanup():
@@ -81,7 +83,7 @@ with st.sidebar:
     if st.button("💰 Update Market Prices", width='stretch'):
         with st.spinner("Updating market prices..."):
             try:
-                result = update_market_data_for_recommended_stocks()
+                result = update_market_data_for_recommended_stocks(process_name=MARKET_REFRESH_PROCESS_NAME)
                 st.success(f"✅ Updated {result['updated']} stocks, {result['failed']} failed, {result['skipped']} skipped")
                 st.rerun()
             except ValueError as e:

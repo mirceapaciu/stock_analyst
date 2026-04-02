@@ -23,6 +23,7 @@ from utils.logger import save_workflow_state_to_json
 setup_logging()
 
 PROCESS_NAME = "recommendations_workflow"
+MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"
 
 def run_recommendations_workflow():
     logger = logging.getLogger("run_recommendation_workflow")
@@ -149,7 +150,10 @@ def run_recommendations_workflow():
             logger.info(
                 f"Updating market data for workflow stocks only ({len(workflow_tickers)} ticker(s))..."
             )
-            update_result = update_market_data_for_recommended_stocks(workflow_tickers=workflow_tickers)
+            update_result = update_market_data_for_recommended_stocks(
+                workflow_tickers=workflow_tickers,
+                process_name=MARKET_REFRESH_PROCESS_NAME,
+            )
             logger.info(f"Market data updated: {update_result['updated']} stocks updated, "
                        f"{update_result['failed']} failed, {update_result['skipped']} skipped")
         except Exception as e:

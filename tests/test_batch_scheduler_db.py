@@ -175,3 +175,30 @@ class TestBatchSchedulerDatabase:
         assert last_status == "FAILED_SKIPPED"
         assert consecutive_failures == 0
         assert sweep_completed_at is not None
+
+    def test_get_batch_schedule_status_returns_current_row(self, tmp_path):
+        db = RecommendationsDatabase(str(tmp_path / "batch_scheduler_status.duckdb"))
+
+        self._seed_recommended_stock(db, "AAPL", 4.5, "2026-01-01")
+        db.get_or_start_sweep("tracked_stock", min_rating=4.0, stale_days=14)
+        db.advance_sweep("tracked_stock", processed_tickers=["AAPL"], status="COMPLETED")
+
+        row = db.get_batch_schedule_status("tracked_stock")
+
+        assert row is not None
+        assert row["workflow_type"] == "tracked_stock"
+        assert row["last_batch_status"] == "COMPLETED"
+        assert row["last_batch_at"] is not None
+
+    def test_touch_process_heartbeat_upserts_scheduler_liveness(self, tmp_path):
+        db = RecommendationsDatabase(str(tmp_path / "batch_scheduler_heartbeat.duckdb"))
+
+        db.touch_process_heartbeat("scheduler_heartbeat")
+
+        heartbeat_status = db.get_process_status("scheduler_heartbeat")
+
+        assert heartbeat_status is not None
+        assert heartbeat_status["process_name"] == "scheduler_heartbeat"
+        assert heartbeat_status["status"] == "HEARTBEAT"
+        assert heartbeat_status["start_timestamp"] is not None
+        assert heartbeat_status["end_timestamp"] is not None

@@ -30,6 +30,7 @@ from utils.logger import setup_logging, save_workflow_state_to_json
 setup_logging()
 
 PROCESS_NAME = "tracked_stock_batch"
+MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"
 WORKFLOW_TYPE = "tracked_stock"
 PROCESS_STALE_HOURS = max(1, int(os.getenv("TRACKED_BATCH_PROCESS_STALE_HOURS", "4")))
 
@@ -191,7 +192,10 @@ def run_tracked_stock_batch() -> int:
             logger.info(
                 f"Updating market data for workflow stocks only ({len(workflow_tickers)} ticker(s))..."
             )
-            update_result = update_market_data_for_recommended_stocks(workflow_tickers=workflow_tickers)
+            update_result = update_market_data_for_recommended_stocks(
+                workflow_tickers=workflow_tickers,
+                process_name=MARKET_REFRESH_PROCESS_NAME,
+            )
             logger.info(
                 f"Market data update result: updated={update_result['updated']}, "
                 f"failed={update_result['failed']}, skipped={update_result['skipped']}"

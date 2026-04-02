@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -202,7 +201,7 @@ def test_dashboard_extracts_job_pid_from_process_message(monkeypatch):
     assert discovery_row["Job PID"] == "12345"
 
 
-def test_run_job_now_skips_when_selected_job_pid_is_alive(monkeypatch):
+def test_request_job_start_now_skips_when_job_is_running(monkeypatch):
     module = _load_dashboard_module(monkeypatch)
 
     class _DbStub:
@@ -218,27 +217,23 @@ def test_run_job_now_skips_when_selected_job_pid_is_alive(monkeypatch):
                 "message": '{"pid":12345,"script":"run_recommendations_workflow.py"}',
             }
 
-        def end_process(self, *_args, **_kwargs):
-            raise AssertionError("end_process should not be called for alive process")
-
-        def start_process(self, *_args, **_kwargs):
-            raise AssertionError("start_process should not be called for alive process")
+        def touch_process_heartbeat(self, *_args, **_kwargs):
+            raise AssertionError("touch_process_heartbeat should not be called for running process")
 
     monkeypatch.setattr(module, "RecommendationsDatabase", lambda _db_path: _DbStub())
-    monkeypatch.setattr(module, "_is_pid_alive", lambda _pid: True)
 
-    started, message = module._run_job_now("Stock recommendation discovery", "12345")
+    started, message = module._request_job_start_now("Stock recommendation discovery")
 
     assert started is False
     assert "already running" in message
 
 
-def test_run_job_now_launches_subprocess_and_persists_pid(monkeypatch):
+def test_request_job_start_now_persists_requested_timestamp(monkeypatch):
     module = _load_dashboard_module(monkeypatch)
 
     class _DbStub:
         def __init__(self):
-            self.start_calls = []
+            self.request_calls = []
 
         def __enter__(self):
             return self
@@ -249,28 +244,18 @@ def test_run_job_now_launches_subprocess_and_persists_pid(monkeypatch):
         def get_process_status(self, _process_name):
             return None
 
-        def end_process(self, *_args, **_kwargs):
-            raise AssertionError("end_process should not be called for a fresh run")
-
-        def start_process(self, process_name, message=None):
-            self.start_calls.append((process_name, message))
-
-    class _DummyProcess:
-        pid = 56789
+        def touch_process_heartbeat(self, process_name, status="HEARTBEAT", message=None):
+            self.request_calls.append((process_name, status, message))
 
     db = _DbStub()
     monkeypatch.setattr(module, "RecommendationsDatabase", lambda _db_path: db)
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: _DummyProcess())
 
-    started, message = module._run_job_now("Stock recommendation discovery")
+    started, message = module._request_job_start_now("Stock recommendation discovery")
 
     assert started is True
-    assert "PID 56789" in message
-    assert len(db.start_calls) == 1
-    process_name, payload = db.start_calls[0]
-    assert process_name == "recommendations_workflow"
+    assert "Queued" in message
+    assert len(db.request_calls) == 1
+    process_name, status, payload = db.request_calls[0]
+    assert process_name == "scheduler_next_start_discovery_workflow"
+    assert status == "REQUESTED"
     assert payload is not None
-
-    parsed = json.loads(payload)
-    assert parsed["pid"] == 56789
-    assert parsed["started_by"] == "dashboard"

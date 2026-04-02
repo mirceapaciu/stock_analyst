@@ -1,8 +1,6 @@
 """Streamlit page for viewing scheduled job dashboard status."""
 
 import json
-import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,16 +36,16 @@ SCHEDULER_NEXT_RUN_TRACKED_PROCESS = "scheduler_next_run_tracked_stock_batch"
 SCHEDULER_NEXT_RUN_MARKET_PROCESS = "scheduler_next_run_market_price_refresh"
 JOB_CONFIG_BY_TYPE = {
     "Stock recommendation discovery": {
-        "script": "run_recommendations_workflow.py",
         "process": DISCOVERY_PROCESS,
+        "request_process": "scheduler_next_start_discovery_workflow",
     },
     "Tracked Stock recommendation": {
-        "script": "run_tracked_stock_batch.py",
         "process": TRACKED_PROCESS,
+        "request_process": "scheduler_next_start_tracked_stock_batch",
     },
     "Market price refresh": {
-        "script": "update_stale_market_prices.py",
         "process": MARKET_REFRESH_PROCESS,
+        "request_process": "scheduler_next_start_market_price_refresh",
     },
 }
 
@@ -110,76 +108,27 @@ def _extract_job_pid(process_status: dict | None) -> str:
     return "N/A"
 
 
-def _parse_pid(pid_value: str | None) -> int | None:
-    if not pid_value:
-        return None
-    raw_pid = str(pid_value).strip()
-    if not raw_pid or raw_pid.upper() == "N/A":
-        return None
-    try:
-        return int(raw_pid)
-    except ValueError:
-        return None
-
-
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _build_job_process_message(pid: int, script_name: str) -> str:
-    return json.dumps(
-        {
-            "pid": pid,
-            "script": script_name,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "started_by": "dashboard",
-        },
-        separators=(",", ":"),
-    )
-
-
-def _run_job_now(job_type: str, current_pid: str | None = None) -> tuple[bool, str]:
+def _request_job_start_now(job_type: str) -> tuple[bool, str]:
     job_config = JOB_CONFIG_BY_TYPE.get(job_type)
     if not job_config:
         return False, f"Unknown job type: {job_type}"
 
     process_name = job_config["process"]
-    script_name = job_config["script"]
-    script_path = Path(__file__).resolve().parents[3] / "scripts" / script_name
-    if not script_path.exists():
-        return False, f"Job script not found: {script_path}"
+    request_process = job_config["request_process"]
 
     with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
         status = db.get_process_status(process_name)
         if status and str(status.get("status") or "").strip().upper() == "STARTED":
-            status_pid = _parse_pid(_extract_job_pid(status))
-            selected_pid = _parse_pid(current_pid)
-            effective_pid = status_pid or selected_pid
+            return False, f"{job_type} is already running"
 
-            if effective_pid is not None and _is_pid_alive(effective_pid):
-                return False, f"{job_type} is already running (PID {effective_pid})"
-
-            db.end_process(
-                process_name,
-                "FAILED",
-                f"Recovered stale STARTED state before manual run; previous PID={effective_pid}",
-            )
-
-        process = subprocess.Popen(
-            [sys.executable, str(script_path)],
-            cwd=str(script_path.parent),
+        requested_start = datetime.now(timezone.utc).isoformat()
+        db.touch_process_heartbeat(
+            request_process,
+            status="REQUESTED",
+            message=requested_start,
         )
-        db.start_process(process_name, message=_build_job_process_message(process.pid, script_name))
 
-    return True, f"Started {job_type} (PID {process.pid})"
+    return True, f"Queued {job_type} to run at {requested_start}"
 
 
 def _resolve_scheduler_next_run(process_status: dict | None) -> str:
@@ -397,10 +346,7 @@ selected_is_running = bool(selected_row and selected_row.get("Status") == "Runni
 run_job_disabled = selected_row is None or selected_is_running
 
 if st.button("Run job", width="stretch", disabled=run_job_disabled):
-    started, message = _run_job_now(
-        selected_row["Job Type"],
-        selected_row.get("Job PID"),
-    )
+    started, message = _request_job_start_now(selected_row["Job Type"])
     if started:
         st.success(message)
         st.cache_data.clear()

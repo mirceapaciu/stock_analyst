@@ -33,6 +33,11 @@ SCHEDULER_NEXT_RUN_PROCESS_BY_JOB_ID = {
     "tracked_stock_batch": "scheduler_next_run_tracked_stock_batch",
     "market_price_refresh": "scheduler_next_run_market_price_refresh",
 }
+SCHEDULER_NEXT_START_REQUEST_PROCESS_BY_JOB_ID = {
+    "discovery_workflow": "scheduler_next_start_discovery_workflow",
+    "tracked_stock_batch": "scheduler_next_start_tracked_stock_batch",
+    "market_price_refresh": "scheduler_next_start_market_price_refresh",
+}
 JOB_PROCESS_BY_JOB_ID = {
     "discovery_workflow": "recommendations_workflow",
     "tracked_stock_batch": "tracked_stock_batch",
@@ -44,17 +49,23 @@ JOB_SCRIPT_BY_JOB_ID = {
     "market_price_refresh": "update_stale_market_prices.py",
 }
 ACTIVE_SCHEDULER: BlockingScheduler | None = None
+ACTIVE_CHILD_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
 def _script_path(script_name: str) -> Path:
     return Path(__file__).resolve().parent / script_name
 
 
-def _build_process_message(pid: int, script_name: str) -> str:
+def _repo_root_path() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _build_process_message(pid: int, script_name: str, command: list[str]) -> str:
     return json.dumps(
         {
             "pid": pid,
             "script": script_name,
+            "command": command,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "started_by": "scheduler",
         },
@@ -62,7 +73,7 @@ def _build_process_message(pid: int, script_name: str) -> str:
     )
 
 
-def _extract_pid(message: str | None) -> int | None:
+def _extract_process_payload(message: str | None) -> dict | None:
     if not message:
         return None
 
@@ -71,16 +82,45 @@ def _extract_pid(message: str | None) -> int | None:
         return None
 
     try:
-        parsed = json.loads(raw_message)
-        pid_value = parsed.get("pid") if isinstance(parsed, dict) else None
-        return int(pid_value) if pid_value is not None else None
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
+        payload = json.loads(raw_message)
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_pid(message: str | None) -> int | None:
+    if not message:
+        return None
+
+    payload = _extract_process_payload(message)
+    if payload is not None:
+        pid_value = payload.get("pid")
+        try:
+            return int(pid_value) if pid_value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    raw_message = str(message).strip()
+    if not raw_message:
+        return None
 
     try:
         return int(raw_message)
     except ValueError:
         return None
+
+
+def _extract_command(message: str | None) -> str | None:
+    payload = _extract_process_payload(message)
+    if payload is None:
+        return None
+
+    command = payload.get("command")
+    if isinstance(command, list):
+        return " ".join(str(part) for part in command)
+    if isinstance(command, str):
+        return command
+    return None
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -101,9 +141,29 @@ def _verify_running_jobs_liveness() -> None:
     for process_name in JOB_PROCESS_BY_JOB_ID.values():
         status = db.get_process_status(process_name)
         if not status or str(status.get("status") or "").strip().upper() != "STARTED":
+            ACTIVE_CHILD_PROCESSES.pop(process_name, None)
             continue
 
-        pid = _extract_pid(status.get("message"))
+        raw_message = status.get("message")
+        pid = _extract_pid(raw_message)
+        command_text = _extract_command(raw_message) or "unknown"
+        child_process = ACTIVE_CHILD_PROCESSES.get(process_name)
+
+        if child_process is not None:
+            exit_code = child_process.poll()
+            if exit_code is None:
+                continue
+
+            active_pid = child_process.pid
+            failure_message = (
+                f"Scheduler detected dead process PID {active_pid}; "
+                f"exit_code={exit_code}; command={command_text}"
+            )
+            logger.error("%s for process '%s'", failure_message, process_name)
+            db.end_process(process_name, "FAILED", failure_message)
+            ACTIVE_CHILD_PROCESSES.pop(process_name, None)
+            continue
+
         if pid is None:
             failure_message = "Scheduler could not verify running job: missing PID metadata"
             logger.error("%s for process '%s'", failure_message, process_name)
@@ -113,9 +173,13 @@ def _verify_running_jobs_liveness() -> None:
         if _is_pid_alive(pid):
             continue
 
-        failure_message = f"Scheduler detected dead process PID {pid}"
+        failure_message = (
+            f"Scheduler detected dead process PID {pid}; "
+            f"exit_code=unknown; command={command_text}"
+        )
         logger.error("%s for process '%s'", failure_message, process_name)
         db.end_process(process_name, "FAILED", failure_message)
+        ACTIVE_CHILD_PROCESSES.pop(process_name, None)
 
 
 def _launch_job_subprocess(job_id: str) -> None:
@@ -143,9 +207,11 @@ def _launch_job_subprocess(job_id: str) -> None:
     script_path = _script_path(script_name)
     process = subprocess.Popen(
         [sys.executable, str(script_path)],
-        cwd=str(Path(__file__).resolve().parent),
+        cwd=str(_repo_root_path()),
     )
-    db.start_process(process_name, message=_build_process_message(process.pid, script_name))
+    command = [sys.executable, str(script_path)]
+    ACTIVE_CHILD_PROCESSES[process_name] = process
+    db.start_process(process_name, message=_build_process_message(process.pid, script_name, command))
     logger.info("Launched '%s' as PID %s", process_name, process.pid)
 
 
@@ -207,9 +273,59 @@ def _record_scheduler_next_run_times(scheduler: BlockingScheduler) -> None:
         )
 
 
+def _apply_requested_starts(scheduler: BlockingScheduler) -> None:
+    """Apply dashboard manual start requests by setting job next_run_time."""
+    db = RecommendationsDatabase(RECOMMENDATIONS_DB_PATH)
+    now_utc = datetime.now(timezone.utc)
+
+    for job_id, request_process in SCHEDULER_NEXT_START_REQUEST_PROCESS_BY_JOB_ID.items():
+        request_status = db.get_process_status(request_process)
+        if not request_status:
+            continue
+
+        request_state = str(request_status.get("status") or "").strip().upper()
+        if request_state != "REQUESTED":
+            continue
+
+        requested_timestamp = str(request_status.get("message") or "").strip()
+        requested_start = pd.to_datetime(requested_timestamp, errors="coerce", utc=True)
+        if pd.isna(requested_start):
+            db.touch_process_heartbeat(
+                request_process,
+                status="FAILED",
+                message=f"Invalid next_start_timestamp: {requested_timestamp}",
+            )
+            continue
+
+        job = scheduler.get_job(job_id)
+        if not job:
+            db.touch_process_heartbeat(
+                request_process,
+                status="FAILED",
+                message=f"Scheduler job not found for request: {job_id}",
+            )
+            continue
+
+        requested_datetime = requested_start.to_pydatetime()
+        effective_start = now_utc if requested_datetime <= now_utc else requested_datetime
+        job.modify(next_run_time=effective_start)
+
+        db.touch_process_heartbeat(
+            request_process,
+            status="CONSUMED",
+            message=effective_start.isoformat(),
+        )
+        logger.info(
+            "Applied manual next_start_timestamp for '%s': %s",
+            job_id,
+            effective_start.isoformat(),
+        )
+
+
 def _record_scheduler_runtime_state(scheduler: BlockingScheduler) -> None:
     """Persist scheduler heartbeat and next-run metadata in one call."""
     _record_scheduler_heartbeat()
+    _apply_requested_starts(scheduler)
     _record_scheduler_next_run_times(scheduler)
     _verify_running_jobs_liveness()
 

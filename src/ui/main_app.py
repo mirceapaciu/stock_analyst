@@ -47,7 +47,7 @@ with col2:
         st.page_link("pages/3_User_Guide.py", label="📖 User Guide", icon="📖")
     except (AttributeError, TypeError):
         # Fallback for older Streamlit versions
-        if st.button("📖 User Guide", use_container_width=True):
+        if st.button("📖 User Guide", width='stretch'):
             st.switch_page("pages/3_User_Guide.py")
 
 st.markdown("""

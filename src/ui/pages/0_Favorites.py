@@ -598,7 +598,7 @@ try:
                 height=150,
                 placeholder="Example: Reasons for adding to favorites, catalysts, earnings dates, etc."
             )
-            submitted = st.form_submit_button("Add note", use_container_width=True)
+            submitted = st.form_submit_button("Add note", width='stretch')
 
             if submitted:
                 cleaned_note = note_text.strip()

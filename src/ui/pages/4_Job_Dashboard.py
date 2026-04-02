@@ -173,4 +173,4 @@ styled_df = display_df.style.apply(
     subset=["Last Run Timestamp"],
 )
 
-st.dataframe(styled_df, use_container_width=True, hide_index=True)
+st.dataframe(styled_df, width='stretch', hide_index=True)

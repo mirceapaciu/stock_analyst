@@ -11,11 +11,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from config import DISCOVERY_INTERVAL_HOURS, TRACKED_BATCH_INTERVAL_HOURS
+from config import DISCOVERY_INTERVAL_HOURS, MARKET_PRICE_REFRESH_INTERVAL_HOURS, TRACKED_BATCH_INTERVAL_HOURS
 from config import RECOMMENDATIONS_DB_PATH
 from repositories.recommendations_db import RecommendationsDatabase
 from run_recommendations_workflow import run_recommendations_workflow
 from run_tracked_stock_batch import run_tracked_stock_batch
+from update_stale_market_prices import main as run_market_price_refresh
 from utils.logger import setup_logging
 
 setup_logging()
@@ -60,6 +61,16 @@ def run_scheduler() -> None:
     )
 
     scheduler.add_job(
+        run_market_price_refresh,
+        IntervalTrigger(hours=MARKET_PRICE_REFRESH_INTERVAL_HOURS),
+        id="market_price_refresh",
+        name="Market price refresh",
+        max_instances=1,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
         _record_scheduler_heartbeat,
         IntervalTrigger(seconds=SCHEDULER_HEARTBEAT_INTERVAL_SECONDS),
         id="scheduler_heartbeat",
@@ -69,9 +80,10 @@ def run_scheduler() -> None:
     )
 
     logger.info(
-        "Scheduler starting: discovery every %dh, tracked batches every %dh",
+        "Scheduler starting: discovery every %dh, tracked batches every %dh, market price refresh every %dh",
         DISCOVERY_INTERVAL_HOURS,
         TRACKED_BATCH_INTERVAL_HOURS,
+        MARKET_PRICE_REFRESH_INTERVAL_HOURS,
     )
     scheduler.start()
 

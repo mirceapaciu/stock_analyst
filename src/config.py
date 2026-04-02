@@ -71,6 +71,10 @@ DISCOVERY_INTERVAL_HOURS = max(
     1,
     int(os.getenv("DISCOVERY_INTERVAL_HOURS", "72")),  # Default to every 3 days for discovery workflow
 )
+MARKET_PRICE_REFRESH_INTERVAL_HOURS = max(
+    1,
+    int(os.getenv("MARKET_PRICE_REFRESH_INTERVAL_HOURS", "24")),  # Default to daily market price refresh
+)
 SWEEP_STALE_DAYS = max(1, int(os.getenv("SWEEP_STALE_DAYS", "14")))
 
 TRACKED_BATCH_SITES = [

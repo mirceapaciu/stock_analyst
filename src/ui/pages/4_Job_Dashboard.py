@@ -181,7 +181,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
             "Next Scheduled Run": discovery_next_run,
-            "Completion Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
+            "Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
             "Message": _resolve_process_message(discovery_status),
             "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
             "_Raw Status": discovery_raw_status,
@@ -192,7 +192,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
             "Next Scheduled Run": tracked_next_run,
-            "Completion Status": tracked_display_status,
+            "Status": tracked_display_status,
             "Message": _resolve_process_message(tracked_status, tracked_fallback_message),
             "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
             "_Raw Status": tracked_raw_status,
@@ -203,7 +203,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
             "Next Scheduled Run": market_next_run,
-            "Completion Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
+            "Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
             "Message": _resolve_process_message(market_refresh_status),
             "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),
             "_Raw Status": market_refresh_raw_status,
@@ -215,7 +215,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
 
 st.title("🧭 Job Dashboard")
 st.markdown("""
-View status for scheduled jobs, including last run timestamp, completion status, and configured frequency.
+View status for scheduled jobs, including last run timestamp, status, and configured frequency.
 """)
 
 with st.sidebar:
@@ -243,13 +243,13 @@ display_df = df.drop(columns=["_Raw Status", "_Schedule Days", "_Due State"])
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    running_count = int((display_df["Completion Status"] == "Running").sum())
+    running_count = int((display_df["Status"] == "Running").sum())
     st.metric("Running Jobs", running_count)
 with col2:
-    completed_count = int((display_df["Completion Status"] == "Completed").sum())
+    completed_count = int((display_df["Status"] == "Completed").sum())
     st.metric("Completed Jobs", completed_count)
 with col3:
-    failed_count = int((display_df["Completion Status"] == "Failed").sum())
+    failed_count = int((display_df["Status"] == "Failed").sum())
     st.metric("Failed Jobs", failed_count)
 
 styled_df = display_df.style.apply(

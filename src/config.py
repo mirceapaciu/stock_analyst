@@ -143,3 +143,7 @@ BROWSER_FETCH_TIMEOUT_SECONDS = max(10, int(os.getenv("BROWSER_FETCH_TIMEOUT_SEC
 
 # Recommendations aggregation settings
 RECOMMENDATION_LOOKBACK_MONTHS = max(0, int(os.getenv("RECOMMENDATION_LOOKBACK_MONTHS", "2")))
+
+# APScheduler persistent jobstore (used by scripts/scheduler.py)
+default_scheduler_jobstore_url = f"sqlite:///{Path(RECOMMENDATIONS_DB_PATH).resolve().as_posix()}"
+SCHEDULER_JOBSTORE_URL = os.getenv("SCHEDULER_JOBSTORE_URL", default_scheduler_jobstore_url)

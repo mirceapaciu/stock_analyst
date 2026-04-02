@@ -2038,25 +2038,26 @@ class RecommendationsDatabase:
             return dict(row)
         return None
     
-    def start_process(self, process_name: str) -> None:
+    def start_process(self, process_name: str, message: str | None = None) -> None:
         """Mark a process as started by upserting with current timestamp and NULL end_timestamp.
         
         Args:
             process_name: Name of the process to track
+            message: Optional metadata payload (for example scheduler PID details)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
             INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
-            VALUES (?, datetime('now'), NULL, 0, 'STARTED', NULL)
+            VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = NULL,
                 progress_pct = 0,
                 status = 'STARTED',
-                message = NULL
-        """, (process_name,))
+                message = COALESCE(excluded.message, process.message)
+        """, (process_name, message))
         
         conn.commit()
         conn.close()

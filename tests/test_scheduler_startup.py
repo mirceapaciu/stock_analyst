@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +43,12 @@ class _SchedulerDbStub:
         self.start_calls.append((process_name, message))
         self._statuses[process_name] = {
             "status": "STARTED",
+            "message": message,
+        }
+
+    def touch_process_heartbeat(self, process_name: str, status: str = "HEARTBEAT", message: str | None = None):
+        self._statuses[process_name] = {
+            "status": status,
             "message": message,
         }
 
@@ -158,3 +165,52 @@ def test_launch_job_subprocess_starts_process_with_pid_message(monkeypatch):
     payload = json.loads(message)
     assert payload["pid"] == 43210
     assert payload["script"] == "run_recommendations_workflow.py"
+
+
+def test_record_scheduler_next_run_times_uses_trigger_fallback(monkeypatch):
+    scheduler = importlib.import_module("scheduler")
+
+    class _DummyTrigger:
+        def __init__(self, next_fire_time: datetime):
+            self._next_fire_time = next_fire_time
+
+        def get_next_fire_time(self, _previous_fire_time, _now):
+            return self._next_fire_time
+
+    class _DummyJob:
+        def __init__(self, trigger):
+            self.next_run_time = None
+            self.trigger = trigger
+
+    class _DummyScheduler:
+        def __init__(self, jobs: dict[str, object]):
+            self._jobs = jobs
+
+        def get_job(self, job_id: str):
+            return self._jobs.get(job_id)
+
+    expected_next_run = datetime(2099, 1, 1, 0, 0, tzinfo=timezone.utc)
+    dummy_scheduler = _DummyScheduler(
+        {
+            "discovery_workflow": _DummyJob(_DummyTrigger(expected_next_run)),
+            "tracked_stock_batch": _DummyJob(_DummyTrigger(expected_next_run)),
+            "market_price_refresh": _DummyJob(_DummyTrigger(expected_next_run)),
+        }
+    )
+
+    db = _SchedulerDbStub()
+    monkeypatch.setattr(scheduler, "RecommendationsDatabase", lambda _db_path: db)
+
+    scheduler._record_scheduler_next_run_times(dummy_scheduler)
+
+    discovery_status = db.get_process_status("scheduler_next_run_discovery_workflow")
+    tracked_status = db.get_process_status("scheduler_next_run_tracked_stock_batch")
+    market_status = db.get_process_status("scheduler_next_run_market_price_refresh")
+
+    assert discovery_status is not None
+    assert tracked_status is not None
+    assert market_status is not None
+
+    assert discovery_status["message"] == expected_next_run.isoformat()
+    assert tracked_status["message"] == expected_next_run.isoformat()
+    assert market_status["message"] == expected_next_run.isoformat()

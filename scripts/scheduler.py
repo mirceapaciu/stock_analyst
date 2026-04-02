@@ -168,14 +168,37 @@ def _record_scheduler_heartbeat() -> None:
     )
 
 
+def _resolve_job_next_run_time(job, now_utc: datetime) -> datetime | None:
+    """Resolve a job next run time, including tentative jobs before scheduler.start()."""
+    if not job:
+        return None
+
+    explicit_next_run = getattr(job, "next_run_time", None)
+    if explicit_next_run is not None:
+        return explicit_next_run
+
+    trigger = getattr(job, "trigger", None)
+    if trigger is None:
+        return None
+
+    get_next_fire_time = getattr(trigger, "get_next_fire_time", None)
+    if not callable(get_next_fire_time):
+        return None
+
+    try:
+        return get_next_fire_time(None, now_utc)
+    except Exception:
+        return None
+
+
 def _record_scheduler_next_run_times(scheduler: BlockingScheduler) -> None:
     """Persist each job's next run timestamp for dashboard visibility."""
     db = RecommendationsDatabase(RECOMMENDATIONS_DB_PATH)
+    now_utc = datetime.now(timezone.utc)
 
     for job_id, process_name in SCHEDULER_NEXT_RUN_PROCESS_BY_JOB_ID.items():
         job = scheduler.get_job(job_id)
-        # Before scheduler.start(), jobs are tentative and may not expose next_run_time.
-        next_run_attr = getattr(job, "next_run_time", None) if job else None
+        next_run_attr = _resolve_job_next_run_time(job, now_utc)
         next_run_time = next_run_attr.isoformat() if next_run_attr else "N/A"
         db.touch_process_heartbeat(
             process_name,

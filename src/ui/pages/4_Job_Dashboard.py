@@ -29,6 +29,9 @@ TRACKED_WORKFLOW_TYPE = "tracked_stock"
 MARKET_REFRESH_PROCESS = "market_price_refresh"
 SCHEDULER_HEARTBEAT_PROCESS = "scheduler_heartbeat"
 SCHEDULER_HEARTBEAT_STALE_MINUTES = 3
+SCHEDULER_NEXT_RUN_DISCOVERY_PROCESS = "scheduler_next_run_discovery_workflow"
+SCHEDULER_NEXT_RUN_TRACKED_PROCESS = "scheduler_next_run_tracked_stock_batch"
+SCHEDULER_NEXT_RUN_MARKET_PROCESS = "scheduler_next_run_market_price_refresh"
 
 
 def _format_schedule_days(days: float) -> str:
@@ -71,6 +74,29 @@ def _resolve_process_message(process_status: dict | None, fallback_message: str 
     return "N/A"
 
 
+def _resolve_scheduler_next_run(process_status: dict | None) -> str:
+    if not process_status:
+        return "N/A"
+
+    next_run = str(process_status.get("message") or "").strip()
+    if next_run:
+        return next_run
+
+    return "N/A"
+
+
+def _resolve_due_state(raw_status: str | None, next_run_timestamp: str | None) -> str:
+    normalized_status = str(raw_status or "").strip().upper()
+    if normalized_status == "STARTED":
+        return "Running"
+
+    parsed_next_run = pd.to_datetime(next_run_timestamp, errors="coerce", utc=True)
+    if pd.isna(parsed_next_run):
+        return "Unknown"
+
+    return "Due" if pd.Timestamp.now(tz="UTC") >= parsed_next_run else "Waiting"
+
+
 def _resolve_heartbeat_timestamp(process_status: dict | None) -> str:
     if not process_status:
         return "N/A"
@@ -97,25 +123,16 @@ def _get_scheduler_heartbeat_state(process_status: dict | None) -> tuple[str, st
 
 
 def _style_last_run_timestamp(column: pd.Series, metadata: pd.DataFrame) -> list[str]:
-    now_utc = pd.Timestamp.now(tz="UTC")
     styles: list[str] = []
 
-    for row_index, value in column.items():
-        last_run_timestamp = pd.to_datetime(value, errors="coerce", utc=True)
-        schedule_days = float(metadata.at[row_index, "_Schedule Days"])
-        raw_status = str(metadata.at[row_index, "_Raw Status"] or "").strip().upper()
+    for row_index, _value in column.items():
+        due_state = str(metadata.at[row_index, "_Due State"] or "").strip()
 
-        if pd.isna(last_run_timestamp):
-            styles.append("background-color: #fee2e2; color: #7f1d1d;")
-            continue
-
-        freshness_threshold = now_utc - pd.to_timedelta(schedule_days, unit="D")
-
-        if last_run_timestamp >= freshness_threshold and raw_status != "STARTED":
+        if due_state == "Waiting":
             styles.append("background-color: #dcfce7; color: #14532d;")
-        elif last_run_timestamp < freshness_threshold and raw_status == "STARTED":
+        elif due_state == "Running":
             styles.append("background-color: #fef9c3; color: #713f12;")
-        elif last_run_timestamp < freshness_threshold and raw_status != "STARTED":
+        elif due_state == "Due":
             styles.append("background-color: #fee2e2; color: #7f1d1d;")
         else:
             styles.append("")
@@ -129,6 +146,9 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
         discovery_status = db.get_process_status(DISCOVERY_PROCESS)
         tracked_status = db.get_process_status(TRACKED_PROCESS)
         market_refresh_status = db.get_process_status(MARKET_REFRESH_PROCESS)
+        discovery_next_run_status = db.get_process_status(SCHEDULER_NEXT_RUN_DISCOVERY_PROCESS)
+        tracked_next_run_status = db.get_process_status(SCHEDULER_NEXT_RUN_TRACKED_PROCESS)
+        market_next_run_status = db.get_process_status(SCHEDULER_NEXT_RUN_MARKET_PROCESS)
         scheduler_heartbeat_status = db.get_process_status(SCHEDULER_HEARTBEAT_PROCESS)
         tracked_batch_status = db.get_batch_schedule_status(TRACKED_WORKFLOW_TYPE)
 
@@ -152,34 +172,46 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
     discovery_raw_status = discovery_status.get("status") if discovery_status else None
     tracked_raw_status = tracked_status.get("status") if tracked_status else tracked_fallback_status
     market_refresh_raw_status = market_refresh_status.get("status") if market_refresh_status else None
+    discovery_next_run = _resolve_scheduler_next_run(discovery_next_run_status)
+    tracked_next_run = _resolve_scheduler_next_run(tracked_next_run_status)
+    market_next_run = _resolve_scheduler_next_run(market_next_run_status)
 
     return [
         {
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
+            "Next Scheduled Run": discovery_next_run,
+            "Due": _resolve_due_state(discovery_raw_status, discovery_next_run),
             "Completion Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
             "Message": _resolve_process_message(discovery_status),
             "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
             "_Raw Status": discovery_raw_status,
             "_Schedule Days": discovery_schedule_days,
+            "_Due State": _resolve_due_state(discovery_raw_status, discovery_next_run),
         },
         {
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
+            "Next Scheduled Run": tracked_next_run,
+            "Due": _resolve_due_state(tracked_raw_status, tracked_next_run),
             "Completion Status": tracked_display_status,
             "Message": _resolve_process_message(tracked_status, tracked_fallback_message),
             "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
             "_Raw Status": tracked_raw_status,
             "_Schedule Days": tracked_schedule_days,
+            "_Due State": _resolve_due_state(tracked_raw_status, tracked_next_run),
         },
         {
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
+            "Next Scheduled Run": market_next_run,
+            "Due": _resolve_due_state(market_refresh_raw_status, market_next_run),
             "Completion Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
             "Message": _resolve_process_message(market_refresh_status),
             "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),
             "_Raw Status": market_refresh_raw_status,
             "_Schedule Days": market_refresh_schedule_days,
+            "_Due State": _resolve_due_state(market_refresh_raw_status, market_next_run),
         },
     ], scheduler_heartbeat_status
 
@@ -209,8 +241,8 @@ elif heartbeat_state == "stale":
 else:
     st.error(f"{heartbeat_title}. {heartbeat_message}")
 
-metadata_df = df[["_Raw Status", "_Schedule Days"]].copy()
-display_df = df.drop(columns=["_Raw Status", "_Schedule Days"])
+metadata_df = df[["_Raw Status", "_Schedule Days", "_Due State"]].copy()
+display_df = df.drop(columns=["_Raw Status", "_Schedule Days", "_Due State"])
 
 col1, col2, col3 = st.columns(3)
 with col1:

@@ -2102,25 +2102,32 @@ class RecommendationsDatabase:
         conn.commit()
         conn.close()
 
-    def touch_process_heartbeat(self, process_name: str, status: str = 'HEARTBEAT') -> None:
+    def touch_process_heartbeat(
+        self,
+        process_name: str,
+        status: str = 'HEARTBEAT',
+        message: str | None = None,
+    ) -> None:
         """Persist a liveness heartbeat timestamp for a long-running process.
 
         Args:
             process_name: Name of the process to track
             status: Stored status label for the heartbeat row
+            message: Optional metadata payload to persist with the heartbeat
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status)
-            VALUES (?, datetime('now'), datetime('now'), 100, ?)
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+            VALUES (?, datetime('now'), datetime('now'), 100, ?, ?)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = datetime('now'),
                 progress_pct = 100,
-                status = excluded.status
-        """, (process_name, status))
+                status = excluded.status,
+                message = excluded.message
+        """, (process_name, status, message))
 
         conn.commit()
         conn.close()

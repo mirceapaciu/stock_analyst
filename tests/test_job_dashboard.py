@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 
 PAGE_PATH = Path(__file__).resolve().parent.parent / "src" / "ui" / "pages" / "4_Job_Dashboard.py"
@@ -100,6 +100,12 @@ class _RecommendationsDbStub:
     def get_process_status(self, process_name):
         if process_name == "scheduler_heartbeat":
             return {"status": "HEARTBEAT", "end_timestamp": "2099-01-01T00:00:00Z"}
+        if process_name == "scheduler_next_run_discovery_workflow":
+            return {"status": "SCHEDULED", "message": "2099-01-03T00:00:00+00:00"}
+        if process_name == "scheduler_next_run_tracked_stock_batch":
+            return {"status": "SCHEDULED", "message": "2099-01-03T00:00:00+00:00"}
+        if process_name == "scheduler_next_run_market_price_refresh":
+            return {"status": "SCHEDULED", "message": "2099-01-02T00:00:00+00:00"}
         return {"status": "COMPLETED", "end_timestamp": "2099-01-01T00:00:00Z", "message": "ok"}
 
     def get_batch_schedule_status(self, _workflow_type):
@@ -139,3 +145,5 @@ def test_market_price_refresh_frequency_uses_market_refresh_interval(monkeypatch
     market_row = next(row for row in rows if row["Job Type"] == "Market price refresh")
 
     assert market_row["Schedule Frequency (days)"] == "Every 1 day(s)"
+    assert market_row["Next Scheduled Run"] == "2099-01-02T00:00:00+00:00"
+    assert market_row["Due"] == "Waiting"

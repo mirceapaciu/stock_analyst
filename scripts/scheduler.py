@@ -25,6 +25,11 @@ logger = logging.getLogger("workflow_scheduler")
 
 SCHEDULER_HEARTBEAT_PROCESS = "scheduler_heartbeat"
 SCHEDULER_HEARTBEAT_INTERVAL_SECONDS = 60
+SCHEDULER_NEXT_RUN_PROCESS_BY_JOB_ID = {
+    "discovery_workflow": "scheduler_next_run_discovery_workflow",
+    "tracked_stock_batch": "scheduler_next_run_tracked_stock_batch",
+    "market_price_refresh": "scheduler_next_run_market_price_refresh",
+}
 
 
 def _record_scheduler_heartbeat() -> None:
@@ -34,11 +39,29 @@ def _record_scheduler_heartbeat() -> None:
     )
 
 
+def _record_scheduler_next_run_times(scheduler: BlockingScheduler) -> None:
+    """Persist each job's next run timestamp for dashboard visibility."""
+    db = RecommendationsDatabase(RECOMMENDATIONS_DB_PATH)
+
+    for job_id, process_name in SCHEDULER_NEXT_RUN_PROCESS_BY_JOB_ID.items():
+        job = scheduler.get_job(job_id)
+        next_run_time = job.next_run_time.isoformat() if job and job.next_run_time else "N/A"
+        db.touch_process_heartbeat(
+            process_name,
+            status="SCHEDULED",
+            message=next_run_time,
+        )
+
+
+def _record_scheduler_runtime_state(scheduler: BlockingScheduler) -> None:
+    """Persist scheduler heartbeat and next-run metadata in one call."""
+    _record_scheduler_heartbeat()
+    _record_scheduler_next_run_times(scheduler)
+
+
 def run_scheduler() -> None:
     """Start blocking scheduler for discovery and tracked batch workflows."""
     scheduler = BlockingScheduler()
-
-    _record_scheduler_heartbeat()
 
     scheduler.add_job(
         run_recommendations_workflow,
@@ -71,13 +94,15 @@ def run_scheduler() -> None:
     )
 
     scheduler.add_job(
-        _record_scheduler_heartbeat,
+        lambda: _record_scheduler_runtime_state(scheduler),
         IntervalTrigger(seconds=SCHEDULER_HEARTBEAT_INTERVAL_SECONDS),
         id="scheduler_heartbeat",
         name="Scheduler heartbeat",
         max_instances=1,
         coalesce=True,
     )
+
+    _record_scheduler_runtime_state(scheduler)
 
     logger.info(
         "Scheduler starting: discovery every %dh, tracked batches every %dh, market price refresh every %dh",

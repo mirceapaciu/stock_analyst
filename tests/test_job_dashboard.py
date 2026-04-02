@@ -146,4 +146,4 @@ def test_market_price_refresh_frequency_uses_market_refresh_interval(monkeypatch
 
     assert market_row["Schedule Frequency (days)"] == "Every 1 day(s)"
     assert market_row["Next Scheduled Run"] == "2099-01-02T00:00:00+00:00"
-    assert market_row["Due"] == "Waiting"
+    assert "Due" not in market_row

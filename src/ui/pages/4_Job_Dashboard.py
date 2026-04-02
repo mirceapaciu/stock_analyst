@@ -17,7 +17,7 @@ from utils.auth import check_password
 if not check_password():
     st.stop()  # Stop execution if not authenticated
 
-from config import DISCOVERY_INTERVAL_HOURS, TRACKED_BATCH_INTERVAL_HOURS, SWEEP_STALE_DAYS
+from config import DISCOVERY_INTERVAL_HOURS, MARKET_PRICE_REFRESH_INTERVAL_HOURS, TRACKED_BATCH_INTERVAL_HOURS
 from config import RECOMMENDATIONS_DB_PATH
 from repositories.recommendations_db import RecommendationsDatabase
 
@@ -147,7 +147,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
 
     discovery_schedule_days = DISCOVERY_INTERVAL_HOURS / 24.0
     tracked_schedule_days = TRACKED_BATCH_INTERVAL_HOURS / 24.0
-    market_refresh_schedule_days = float(SWEEP_STALE_DAYS)
+    market_refresh_schedule_days = MARKET_PRICE_REFRESH_INTERVAL_HOURS / 24.0
 
     discovery_raw_status = discovery_status.get("status") if discovery_status else None
     tracked_raw_status = tracked_status.get("status") if tracked_status else tracked_fallback_status
@@ -195,7 +195,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-rows = load_job_dashboard_rows()
 rows, scheduler_heartbeat_status = load_job_dashboard_rows()
 df = pd.DataFrame(rows)
 

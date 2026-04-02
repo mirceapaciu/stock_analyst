@@ -1,5 +1,6 @@
 """Streamlit page for viewing scheduled job dashboard status."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -71,6 +72,24 @@ def _resolve_process_message(process_status: dict | None, fallback_message: str 
             return message
     if fallback_message:
         return str(fallback_message)
+    return "N/A"
+
+
+def _extract_job_pid(process_status: dict | None) -> str:
+    if not process_status:
+        return "N/A"
+
+    raw_message = str(process_status.get("message") or "").strip()
+    if not raw_message:
+        return "N/A"
+
+    try:
+        payload = json.loads(raw_message)
+        if isinstance(payload, dict) and payload.get("pid") is not None:
+            return str(payload.get("pid"))
+    except json.JSONDecodeError:
+        pass
+
     return "N/A"
 
 
@@ -181,6 +200,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
             "Next Scheduled Run": discovery_next_run,
+            "Job PID": _extract_job_pid(discovery_status),
             "Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
             "Message": _resolve_process_message(discovery_status),
             "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
@@ -192,6 +212,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
             "Next Scheduled Run": tracked_next_run,
+            "Job PID": _extract_job_pid(tracked_status),
             "Status": tracked_display_status,
             "Message": _resolve_process_message(tracked_status, tracked_fallback_message),
             "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
@@ -203,6 +224,7 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
             "Next Scheduled Run": market_next_run,
+            "Job PID": _extract_job_pid(market_refresh_status),
             "Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
             "Message": _resolve_process_message(market_refresh_status),
             "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),

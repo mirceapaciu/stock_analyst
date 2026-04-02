@@ -112,6 +112,17 @@ class _RecommendationsDbStub:
         return None
 
 
+class _RecommendationsDbStubWithPid(_RecommendationsDbStub):
+    def get_process_status(self, process_name):
+        if process_name == "recommendations_workflow":
+            return {
+                "status": "STARTED",
+                "start_timestamp": "2099-01-01T00:00:00Z",
+                "message": '{"pid": 12345, "script": "run_recommendations_workflow.py"}',
+            }
+        return super().get_process_status(process_name)
+
+
 def _load_dashboard_module(monkeypatch, market_refresh_hours: int = 24):
     streamlit_stub = _StreamlitStub()
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_stub)
@@ -138,6 +149,36 @@ def _load_dashboard_module(monkeypatch, market_refresh_hours: int = 24):
     return module
 
 
+def _load_dashboard_module_with_repo_stub(
+    monkeypatch,
+    repo_stub_cls,
+    market_refresh_hours: int = 24,
+):
+    streamlit_stub = _StreamlitStub()
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_stub)
+
+    auth_module = ModuleType("utils.auth")
+    auth_module.check_password = lambda: True
+    monkeypatch.setitem(sys.modules, "utils.auth", auth_module)
+
+    config_module = ModuleType("config")
+    config_module.DISCOVERY_INTERVAL_HOURS = 72
+    config_module.TRACKED_BATCH_INTERVAL_HOURS = 72
+    config_module.MARKET_PRICE_REFRESH_INTERVAL_HOURS = market_refresh_hours
+    config_module.RECOMMENDATIONS_DB_PATH = ":memory:"
+    monkeypatch.setitem(sys.modules, "config", config_module)
+
+    repo_module = ModuleType("repositories.recommendations_db")
+    repo_module.RecommendationsDatabase = repo_stub_cls
+    monkeypatch.setitem(sys.modules, "repositories.recommendations_db", repo_module)
+
+    spec = importlib.util.spec_from_file_location("job_dashboard_page_test", PAGE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_market_price_refresh_frequency_uses_market_refresh_interval(monkeypatch):
     module = _load_dashboard_module(monkeypatch, market_refresh_hours=24)
 
@@ -146,4 +187,15 @@ def test_market_price_refresh_frequency_uses_market_refresh_interval(monkeypatch
 
     assert market_row["Schedule Frequency (days)"] == "Every 1 day(s)"
     assert market_row["Next Scheduled Run"] == "2099-01-02T00:00:00+00:00"
+    assert market_row["Job PID"] == "N/A"
     assert "Due" not in market_row
+
+
+def test_dashboard_extracts_job_pid_from_process_message(monkeypatch):
+    module = _load_dashboard_module_with_repo_stub(monkeypatch, _RecommendationsDbStubWithPid)
+
+    rows, _heartbeat = module.load_job_dashboard_rows()
+    discovery_row = next(row for row in rows if row["Job Type"] == "Stock recommendation discovery")
+
+    assert discovery_row["Status"] == "Running"
+    assert discovery_row["Job PID"] == "12345"

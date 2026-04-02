@@ -342,7 +342,8 @@ class RecommendationsDatabase:
                 start_timestamp TIMESTAMP,
                 end_timestamp TIMESTAMP,
                 progress_pct INTEGER DEFAULT 0,
-                status VARCHAR(20) DEFAULT 'STARTED'
+                   status VARCHAR(20) DEFAULT 'STARTED',
+                   message TEXT
             )
         """)
 
@@ -413,13 +414,31 @@ class RecommendationsDatabase:
 
         # Migration: Add consecutive_failures column to batch_schedule if it doesn't exist
         self._add_batch_schedule_consecutive_failures_if_missing()
-        
+
+        # Migration: Add message column to process table if it doesn't exist
+        self._add_process_message_column_if_missing()
+
         # Migration: Remove fair_price_dcf column from favorite_stock if it exists (moved to recommended_stock)
         self._remove_fair_price_dcf_from_favorite_stock_if_exists()
         
         # Load website data from CSV if the website table is empty
         self.load_websites_if_empty()
     
+    def _add_process_message_column_if_missing(self) -> None:
+        """Add message column to process table if it doesn't exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(process)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'message' not in columns:
+            cursor.execute("ALTER TABLE process ADD COLUMN message TEXT")
+            conn.commit()
+            logger.info("Added message column to process table")
+
+        conn.close()
+
     def _add_page_text_column_if_missing(self):
         """Add page_text column to webpage table if it doesn't exist."""
         conn = self._get_connection()
@@ -2029,39 +2048,41 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status)
-            VALUES (?, datetime('now'), NULL, 0, 'STARTED')
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+            VALUES (?, datetime('now'), NULL, 0, 'STARTED', NULL)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = NULL,
                 progress_pct = 0,
-                status = 'STARTED'
+                status = 'STARTED',
+                message = NULL
         """, (process_name,))
         
         conn.commit()
         conn.close()
         logger.info(f"Process '{process_name}' started")
     
-    def end_process(self, process_name: str, status: str = 'COMPLETED') -> None:
+    def end_process(self, process_name: str, status: str = 'COMPLETED', message: str | None = None) -> None:
         """Mark a process as completed or failed by setting end_timestamp to current time.
-        
+
         Args:
             process_name: Name of the process to mark as complete
             status: Status to set (COMPLETED or FAILED)
+            message: Optional short summary of what the job did
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            UPDATE process 
-            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?
+            UPDATE process
+            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?
             WHERE process_name = ?
-        """, (status, process_name))
-        
+        """, (status, message, process_name))
+
         conn.commit()
         conn.close()
         logger.info(f"Process '{process_name}' ended with status {status}")
-    
+
     def update_process_progress(self, process_name: str, progress_pct: int) -> None:
         """Update the progress percentage for a running process.
         
@@ -2118,7 +2139,7 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status
+            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status, message
             FROM process
             WHERE process_name = ?
         """, (process_name,))

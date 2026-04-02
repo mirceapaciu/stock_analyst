@@ -164,17 +164,17 @@ def run_recommendations_workflow():
         logger.info("=" * 80)
         
         # Mark process as complete
-        db.end_process(PROCESS_NAME, 'COMPLETED')
+        db.end_process(PROCESS_NAME, 'COMPLETED', result.get('status'))
         
         return 0
         
     except KeyboardInterrupt:
         logger.warning("\nWorkflow interrupted by user")
-        db.end_process(PROCESS_NAME, 'FAILED')
+        db.end_process(PROCESS_NAME, 'FAILED', 'Workflow interrupted by user')
         return 1
     except Exception as e:
         logger.error(f"\nWorkflow failed with error: {e}", exc_info=True)
-        db.end_process(PROCESS_NAME, 'FAILED')
+        db.end_process(PROCESS_NAME, 'FAILED', f"Workflow failed: {e}")
         return 1
 
 

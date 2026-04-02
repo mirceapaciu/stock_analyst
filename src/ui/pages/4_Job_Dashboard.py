@@ -61,6 +61,16 @@ def _resolve_last_run(process_status: dict | None, fallback_timestamp: str | Non
     return "N/A"
 
 
+def _resolve_process_message(process_status: dict | None, fallback_message: str | None = None) -> str:
+    if process_status:
+        message = str(process_status.get("message") or "").strip()
+        if message:
+            return message
+    if fallback_message:
+        return str(fallback_message)
+    return "N/A"
+
+
 def _resolve_heartbeat_timestamp(process_status: dict | None) -> str:
     if not process_status:
         return "N/A"
@@ -114,7 +124,7 @@ def _style_last_run_timestamp(column: pd.Series, metadata: pd.DataFrame) -> list
 
 
 @st.cache_data(ttl=60)
-def load_job_dashboard_rows() -> list[dict]:
+def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
     with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
         discovery_status = db.get_process_status(DISCOVERY_PROCESS)
         tracked_status = db.get_process_status(TRACKED_PROCESS)
@@ -124,9 +134,12 @@ def load_job_dashboard_rows() -> list[dict]:
 
     tracked_fallback_status = None
     tracked_fallback_last_run = None
+    tracked_fallback_message = None
     if tracked_batch_status:
         tracked_fallback_status = tracked_batch_status.get("last_batch_status")
         tracked_fallback_last_run = tracked_batch_status.get("last_batch_at")
+        if tracked_fallback_status:
+            tracked_fallback_message = f"Last tracked batch status: {tracked_fallback_status}"
 
     tracked_display_status = _map_process_status(
         tracked_status.get("status") if tracked_status else tracked_fallback_status
@@ -145,6 +158,7 @@ def load_job_dashboard_rows() -> list[dict]:
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
             "Completion Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
+            "Message": _resolve_process_message(discovery_status),
             "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
             "_Raw Status": discovery_raw_status,
             "_Schedule Days": discovery_schedule_days,
@@ -153,6 +167,7 @@ def load_job_dashboard_rows() -> list[dict]:
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
             "Completion Status": tracked_display_status,
+            "Message": _resolve_process_message(tracked_status, tracked_fallback_message),
             "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
             "_Raw Status": tracked_raw_status,
             "_Schedule Days": tracked_schedule_days,
@@ -161,6 +176,7 @@ def load_job_dashboard_rows() -> list[dict]:
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
             "Completion Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
+            "Message": _resolve_process_message(market_refresh_status),
             "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),
             "_Raw Status": market_refresh_raw_status,
             "_Schedule Days": market_refresh_schedule_days,

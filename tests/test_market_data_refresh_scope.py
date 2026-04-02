@@ -36,8 +36,8 @@ class DummyRecommendationsDatabase:
     def start_process(self, process_name):
         self.process_events.append(("start", process_name))
 
-    def end_process(self, process_name, status="COMPLETED"):
-        self.process_events.append(("end", process_name, status))
+    def end_process(self, process_name, status="COMPLETED", message=None):
+        self.process_events.append(("end", process_name, status, message))
 
 
 class FakeFinnhubClient:
@@ -157,5 +157,10 @@ def test_update_market_data_tracks_process_when_process_name_is_provided(monkeyp
     assert result == {"updated": 1, "failed": 0, "skipped": 0}
     assert db.process_events == [
         ("start", "market_price_refresh"),
-        ("end", "market_price_refresh", "COMPLETED"),
+        (
+            "end",
+            "market_price_refresh",
+            "COMPLETED",
+            "Market refresh completed: updated=1, failed=0, skipped=0",
+        ),
     ]

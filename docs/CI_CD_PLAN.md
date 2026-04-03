@@ -16,6 +16,12 @@
 - **Deployment execution**: GitHub Actions self-hosted runner installed on the Linux server.
 - **Connectivity model**: Outbound-only from in-prem server to GitHub (HTTPS/443). No inbound access from GitHub cloud to your server is required.
 
+## Current Local Server Configuration (Implemented)
+
+See [local_prod_server.md](deploy/local/local_prod_server.md) for the current local production server setup,
+including Docker runtime, self-hosted runner configuration, deployment behavior,
+and verification commands.
+
 ## Network Constraint Handling (Server Not Publicly Reachable)
 
 - Use a **self-hosted runner** on the production server and run the deploy job on that runner.
@@ -101,7 +107,7 @@
 
 Use a deployment script on the Linux server (for example `scripts/deploy_production.sh`) with this sequence:
 
-1. `docker compose -f docker-compose-deploy.yml pull`
+1. `docker build -t stock-analysis-app:latest .`
 2. `docker compose -f docker-compose-deploy.yml stop -t 45`
 3. `docker compose -f docker-compose-deploy.yml up -d --build --remove-orphans`
 4. Health check loop (HTTP endpoint or container health status).

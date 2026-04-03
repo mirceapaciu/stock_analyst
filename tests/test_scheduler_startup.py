@@ -26,17 +26,34 @@ class _DummyDb:
 class _SchedulerDbStub:
     def __init__(self, statuses: dict[str, dict] | None = None):
         self._statuses = statuses or {}
-        self.end_calls: list[tuple[str, str, str | None]] = []
+        self.end_calls: list[dict] = []
         self.start_calls: list[tuple[str, str | None]] = []
 
     def get_process_status(self, process_name):
         return self._statuses.get(process_name)
 
-    def end_process(self, process_name: str, status: str = "COMPLETED", message: str | None = None):
-        self.end_calls.append((process_name, status, message))
+    def end_process(
+        self,
+        process_name: str,
+        status: str = "COMPLETED",
+        message: str | None = None,
+        exit_code: int | None = None,
+        failure_log_tail: str | None = None,
+    ):
+        self.end_calls.append(
+            {
+                "process_name": process_name,
+                "status": status,
+                "message": message,
+                "exit_code": exit_code,
+                "failure_log_tail": failure_log_tail,
+            }
+        )
         self._statuses[process_name] = {
             "status": status,
             "message": message,
+            "exit_code": exit_code,
+            "failure_log_tail": failure_log_tail,
         }
 
     def start_process(
@@ -120,10 +137,11 @@ def test_verify_running_jobs_marks_failed_when_pid_missing(monkeypatch):
     scheduler._verify_running_jobs_liveness()
 
     assert db.end_calls
-    process_name, status, message = db.end_calls[0]
-    assert process_name == "recommendations_workflow"
-    assert status == "FAILED"
-    assert "missing PID" in str(message)
+    call = db.end_calls[0]
+    assert call["process_name"] == "recommendations_workflow"
+    assert call["status"] == "FAILED"
+    assert "missing PID" in str(call["message"])
+    assert call["exit_code"] is None
 
 
 def test_verify_running_jobs_marks_failed_when_pid_not_alive(monkeypatch):
@@ -143,10 +161,11 @@ def test_verify_running_jobs_marks_failed_when_pid_not_alive(monkeypatch):
     scheduler._verify_running_jobs_liveness()
 
     assert db.end_calls
-    process_name, status, message = db.end_calls[0]
-    assert process_name == "recommendations_workflow"
-    assert status == "FAILED"
-    assert "dead process PID" in str(message)
+    call = db.end_calls[0]
+    assert call["process_name"] == "recommendations_workflow"
+    assert call["status"] == "FAILED"
+    assert "dead process PID" in str(call["message"])
+    assert call["exit_code"] is None
 
 
 def test_verify_running_jobs_persists_exit_code_and_command(monkeypatch):
@@ -179,11 +198,66 @@ def test_verify_running_jobs_persists_exit_code_and_command(monkeypatch):
     scheduler._verify_running_jobs_liveness()
 
     assert db.end_calls
-    process_name, status, message = db.end_calls[0]
-    assert process_name == "recommendations_workflow"
-    assert status == "FAILED"
-    assert "exit_code=1" in str(message)
-    assert "run_recommendations_workflow.py" in str(message)
+    call = db.end_calls[0]
+    assert call["process_name"] == "recommendations_workflow"
+    assert call["status"] == "FAILED"
+    assert "exit_code=1" in str(call["message"])
+    assert "run_recommendations_workflow.py" in str(call["message"])
+    assert call["exit_code"] == 1
+
+
+def test_verify_running_jobs_captures_failure_log_tail(monkeypatch, tmp_path):
+    scheduler = importlib.import_module("scheduler")
+
+    log_path = tmp_path / "scheduler_job_failure.log"
+    log_path.write_text("line 1\nline 2\nfatal error happened\n", encoding="utf-8")
+
+    db = _SchedulerDbStub(
+        statuses={
+            "recommendations_workflow": {
+                "status": "STARTED",
+                "message": json.dumps(
+                    {
+                        "pid": 54321,
+                        "command": ["python", "run_recommendations_workflow.py"],
+                        "log_path": str(log_path),
+                    }
+                ),
+            },
+            "tracked_stock_batch": {"status": "COMPLETED", "message": "ok"},
+            "market_price_refresh": {"status": "COMPLETED", "message": "ok"},
+        }
+    )
+
+    class _ExitedProc:
+        pid = 54321
+
+        def poll(self):
+            return 2
+
+    monkeypatch.setattr(scheduler, "RecommendationsDatabase", lambda _db_path: db)
+    monkeypatch.setattr(
+        scheduler,
+        "ACTIVE_CHILD_PROCESSES",
+        {"recommendations_workflow": _ExitedProc()},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "ACTIVE_CHILD_PROCESS_LOG_PATHS",
+        {"recommendations_workflow": log_path},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "ACTIVE_CHILD_PROCESS_LOG_HANDLES",
+        {},
+    )
+
+    scheduler._verify_running_jobs_liveness()
+
+    assert db.end_calls
+    call = db.end_calls[0]
+    assert call["exit_code"] == 2
+    assert "fatal error happened" in str(call["failure_log_tail"])
 
 
 def test_launch_job_subprocess_starts_process_with_pid_message(monkeypatch):
@@ -208,6 +282,9 @@ def test_launch_job_subprocess_starts_process_with_pid_message(monkeypatch):
     assert popen_calls
     expected_cwd = str(Path(scheduler.__file__).resolve().parent.parent)
     assert popen_calls[0]["kwargs"].get("cwd") == expected_cwd
+    assert popen_calls[0]["kwargs"].get("stdout") is not None
+    assert popen_calls[0]["kwargs"].get("stderr") == scheduler.subprocess.STDOUT
+    assert popen_calls[0]["kwargs"].get("text") is True
 
     assert db.start_calls
     process_name, message = db.start_calls[0]
@@ -217,6 +294,7 @@ def test_launch_job_subprocess_starts_process_with_pid_message(monkeypatch):
     payload = json.loads(message)
     assert payload["pid"] == 43210
     assert payload["script"] == "run_recommendations_workflow.py"
+    assert payload["log_path"] is not None
     assert "run_recommendations_workflow.py" in " ".join(payload["command"])
 
 

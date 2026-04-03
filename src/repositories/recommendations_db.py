@@ -343,7 +343,9 @@ class RecommendationsDatabase:
                 end_timestamp TIMESTAMP,
                 progress_pct INTEGER DEFAULT 0,
                    status VARCHAR(20) DEFAULT 'STARTED',
-                   message TEXT
+                   message TEXT,
+                   exit_code INTEGER,
+                   failure_log_tail TEXT
             )
         """)
 
@@ -356,7 +358,9 @@ class RecommendationsDatabase:
                 end_timestamp TIMESTAMP,
                 progress_pct INTEGER DEFAULT 0,
                 status VARCHAR(20) DEFAULT 'STARTED',
-                message TEXT
+                message TEXT,
+                exit_code INTEGER,
+                failure_log_tail TEXT
             )
         """)
 
@@ -435,6 +439,12 @@ class RecommendationsDatabase:
         # Migration: Add message column to process table if it doesn't exist
         self._add_process_message_column_if_missing()
 
+        # Migration: Add exit_code columns to process/process_run tables if missing
+        self._add_process_exit_code_columns_if_missing()
+
+        # Migration: Add failure_log_tail columns to process/process_run tables if missing
+        self._add_process_failure_log_tail_columns_if_missing()
+
         # Maintenance: close stale open run-history rows left from older scheduler behavior
         self._close_stale_process_run_rows()
 
@@ -457,6 +467,46 @@ class RecommendationsDatabase:
             conn.commit()
             logger.info("Added message column to process table")
 
+        conn.close()
+
+    def _add_process_exit_code_columns_if_missing(self) -> None:
+        """Add exit_code columns to process and process_run tables if missing."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(process)")
+        process_columns = [column[1] for column in cursor.fetchall()]
+        if 'exit_code' not in process_columns:
+            cursor.execute("ALTER TABLE process ADD COLUMN exit_code INTEGER")
+            logger.info("Added exit_code column to process table")
+
+        cursor.execute("PRAGMA table_info(process_run)")
+        process_run_columns = [column[1] for column in cursor.fetchall()]
+        if 'exit_code' not in process_run_columns:
+            cursor.execute("ALTER TABLE process_run ADD COLUMN exit_code INTEGER")
+            logger.info("Added exit_code column to process_run table")
+
+        conn.commit()
+        conn.close()
+
+    def _add_process_failure_log_tail_columns_if_missing(self) -> None:
+        """Add failure_log_tail columns to process and process_run tables if missing."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(process)")
+        process_columns = [column[1] for column in cursor.fetchall()]
+        if 'failure_log_tail' not in process_columns:
+            cursor.execute("ALTER TABLE process ADD COLUMN failure_log_tail TEXT")
+            logger.info("Added failure_log_tail column to process table")
+
+        cursor.execute("PRAGMA table_info(process_run)")
+        process_run_columns = [column[1] for column in cursor.fetchall()]
+        if 'failure_log_tail' not in process_run_columns:
+            cursor.execute("ALTER TABLE process_run ADD COLUMN failure_log_tail TEXT")
+            logger.info("Added failure_log_tail column to process_run table")
+
+        conn.commit()
         conn.close()
 
     def _close_stale_process_run_rows(self) -> int:
@@ -2124,46 +2174,57 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
-            VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?)
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail)
+            VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?, NULL, NULL)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = NULL,
                 progress_pct = 0,
                 status = 'STARTED',
-                message = COALESCE(excluded.message, process.message)
+                message = COALESCE(excluded.message, process.message),
+                exit_code = NULL,
+                failure_log_tail = NULL
         """, (process_name, message))
 
         if track_run_history:
             cursor.execute("""
-                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
-                VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?)
+                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail)
+                VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?, NULL, NULL)
             """, (process_name, message))
         
         conn.commit()
         conn.close()
         logger.info(f"Process '{process_name}' started")
     
-    def end_process(self, process_name: str, status: str = 'COMPLETED', message: str | None = None) -> None:
+    def end_process(
+        self,
+        process_name: str,
+        status: str = 'COMPLETED',
+        message: str | None = None,
+        exit_code: int | None = None,
+        failure_log_tail: str | None = None,
+    ) -> None:
         """Mark a process as completed or failed by setting end_timestamp to current time.
 
         Args:
             process_name: Name of the process to mark as complete
             status: Status to set (COMPLETED or FAILED)
             message: Optional short summary of what the job did
+            exit_code: Optional process exit code persisted for diagnostics
+            failure_log_tail: Optional log tail captured when a run fails
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
             UPDATE process
-            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?
+            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?, exit_code = ?, failure_log_tail = ?
             WHERE process_name = ?
-        """, (status, message, process_name))
+        """, (status, message, exit_code, failure_log_tail, process_name))
 
         cursor.execute("""
             UPDATE process_run
-            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?
+            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?, exit_code = ?, failure_log_tail = ?
             WHERE run_id = (
                 SELECT run_id
                 FROM process_run
@@ -2171,13 +2232,13 @@ class RecommendationsDatabase:
                 ORDER BY run_id DESC
                 LIMIT 1
             )
-        """, (status, message, process_name))
+        """, (status, message, exit_code, failure_log_tail, process_name))
 
         if cursor.rowcount == 0:
             cursor.execute("""
-                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
-                VALUES (?, datetime('now'), datetime('now'), 100, ?, ?)
-            """, (process_name, status, message))
+                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail)
+                VALUES (?, datetime('now'), datetime('now'), 100, ?, ?, ?, ?)
+            """, (process_name, status, message, exit_code, failure_log_tail))
 
         conn.commit()
         conn.close()
@@ -2231,14 +2292,16 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
-            VALUES (?, datetime('now'), datetime('now'), 100, ?, ?)
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail)
+            VALUES (?, datetime('now'), datetime('now'), 100, ?, ?, NULL, NULL)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = datetime('now'),
                 progress_pct = 100,
                 status = excluded.status,
-                message = excluded.message
+                message = excluded.message,
+                exit_code = NULL,
+                failure_log_tail = NULL
         """, (process_name, status, message))
 
         conn.commit()
@@ -2258,7 +2321,7 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status, message
+            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail
             FROM process
             WHERE process_name = ?
         """, (process_name,))
@@ -2288,7 +2351,7 @@ class RecommendationsDatabase:
 
         cursor.execute(
             """
-            SELECT run_id, process_name, start_timestamp, end_timestamp, progress_pct, status, message
+            SELECT run_id, process_name, start_timestamp, end_timestamp, progress_pct, status, message, exit_code, failure_log_tail
             FROM process_run
             WHERE process_name = ?
             ORDER BY run_id DESC

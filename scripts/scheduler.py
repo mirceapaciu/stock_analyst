@@ -7,6 +7,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 import pandas as pd
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -50,6 +51,10 @@ JOB_SCRIPT_BY_JOB_ID = {
 }
 ACTIVE_SCHEDULER: BlockingScheduler | None = None
 ACTIVE_CHILD_PROCESSES: dict[str, subprocess.Popen] = {}
+ACTIVE_CHILD_PROCESS_LOG_PATHS: dict[str, Path] = {}
+ACTIVE_CHILD_PROCESS_LOG_HANDLES: dict[str, TextIO] = {}
+FAILED_LOG_TAIL_MAX_LINES = 80
+FAILED_LOG_TAIL_MAX_CHARS = 4000
 
 
 def _script_path(script_name: str) -> Path:
@@ -60,12 +65,18 @@ def _repo_root_path() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _build_process_message(pid: int, script_name: str, command: list[str]) -> str:
+def _build_process_message(
+    pid: int,
+    script_name: str,
+    command: list[str],
+    log_path: str | None = None,
+) -> str:
     return json.dumps(
         {
             "pid": pid,
             "script": script_name,
             "command": command,
+            "log_path": log_path,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "started_by": "scheduler",
         },
@@ -123,6 +134,72 @@ def _extract_command(message: str | None) -> str | None:
     return None
 
 
+def _extract_process_log_path(message: str | None) -> str | None:
+    payload = _extract_process_payload(message)
+    if payload is None:
+        return None
+
+    log_path = payload.get("log_path")
+    if isinstance(log_path, str):
+        stripped = log_path.strip()
+        return stripped or None
+    return None
+
+
+def _scheduler_job_log_dir() -> Path:
+    log_dir = _repo_root_path() / "logs" / "app" / "scheduler_jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def _build_job_log_path(process_name: str) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_process_name = process_name.replace("/", "_").replace("\\", "_")
+    return _scheduler_job_log_dir() / f"{safe_process_name}_{timestamp}.log"
+
+
+def _read_log_tail(log_path: str | Path | None) -> str | None:
+    if not log_path:
+        return None
+
+    try:
+        candidate = Path(log_path)
+    except Exception:
+        return None
+
+    if not candidate.exists() or not candidate.is_file():
+        return None
+
+    try:
+        lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    if not lines:
+        return None
+
+    tail = "\n".join(lines[-FAILED_LOG_TAIL_MAX_LINES:]).strip()
+    if not tail:
+        return None
+
+    if len(tail) > FAILED_LOG_TAIL_MAX_CHARS:
+        tail = tail[-FAILED_LOG_TAIL_MAX_CHARS:]
+    return tail
+
+
+def _cleanup_child_tracking(process_name: str) -> None:
+    log_handle = ACTIVE_CHILD_PROCESS_LOG_HANDLES.pop(process_name, None)
+    if log_handle is not None:
+        try:
+            log_handle.flush()
+            log_handle.close()
+        except Exception:
+            pass
+
+    ACTIVE_CHILD_PROCESS_LOG_PATHS.pop(process_name, None)
+    ACTIVE_CHILD_PROCESSES.pop(process_name, None)
+
+
 def _is_pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -141,12 +218,13 @@ def _verify_running_jobs_liveness() -> None:
     for process_name in JOB_PROCESS_BY_JOB_ID.values():
         status = db.get_process_status(process_name)
         if not status or str(status.get("status") or "").strip().upper() != "STARTED":
-            ACTIVE_CHILD_PROCESSES.pop(process_name, None)
+            _cleanup_child_tracking(process_name)
             continue
 
         raw_message = status.get("message")
         pid = _extract_pid(raw_message)
         command_text = _extract_command(raw_message) or "unknown"
+        persisted_log_path = _extract_process_log_path(raw_message)
         child_process = ACTIVE_CHILD_PROCESSES.get(process_name)
 
         if child_process is not None:
@@ -154,20 +232,37 @@ def _verify_running_jobs_liveness() -> None:
             if exit_code is None:
                 continue
 
+            live_log_path = ACTIVE_CHILD_PROCESS_LOG_PATHS.get(process_name)
+            log_tail = _read_log_tail(live_log_path)
+
             active_pid = child_process.pid
             failure_message = (
                 f"Scheduler detected dead process PID {active_pid}; "
                 f"exit_code={exit_code}; command={command_text}"
             )
             logger.error("%s for process '%s'", failure_message, process_name)
-            db.end_process(process_name, "FAILED", failure_message)
-            ACTIVE_CHILD_PROCESSES.pop(process_name, None)
+            db.end_process(
+                process_name,
+                "FAILED",
+                failure_message,
+                exit_code=exit_code,
+                failure_log_tail=log_tail,
+            )
+            _cleanup_child_tracking(process_name)
             continue
 
         if pid is None:
             failure_message = "Scheduler could not verify running job: missing PID metadata"
+            failure_log_tail = _read_log_tail(persisted_log_path)
             logger.error("%s for process '%s'", failure_message, process_name)
-            db.end_process(process_name, "FAILED", failure_message)
+            db.end_process(
+                process_name,
+                "FAILED",
+                failure_message,
+                exit_code=None,
+                failure_log_tail=failure_log_tail,
+            )
+            _cleanup_child_tracking(process_name)
             continue
 
         if _is_pid_alive(pid):
@@ -177,9 +272,16 @@ def _verify_running_jobs_liveness() -> None:
             f"Scheduler detected dead process PID {pid}; "
             f"exit_code=unknown; command={command_text}"
         )
+        failure_log_tail = _read_log_tail(persisted_log_path)
         logger.error("%s for process '%s'", failure_message, process_name)
-        db.end_process(process_name, "FAILED", failure_message)
-        ACTIVE_CHILD_PROCESSES.pop(process_name, None)
+        db.end_process(
+            process_name,
+            "FAILED",
+            failure_message,
+            exit_code=None,
+            failure_log_tail=failure_log_tail,
+        )
+        _cleanup_child_tracking(process_name)
 
 
 def _launch_job_subprocess(job_id: str) -> None:
@@ -202,21 +304,34 @@ def _launch_job_subprocess(job_id: str) -> None:
             f"Scheduler recovered stale STARTED status before relaunch; previous PID={existing_pid}"
         )
         logger.warning("%s for process '%s'", stale_message, process_name)
-        db.end_process(process_name, "FAILED", stale_message)
+        db.end_process(process_name, "FAILED", stale_message, exit_code=None, failure_log_tail=None)
+
+    _cleanup_child_tracking(process_name)
 
     script_path = _script_path(script_name)
-    process = subprocess.Popen(
-        [sys.executable, str(script_path)],
-        cwd=str(_repo_root_path()),
-    )
+    log_path = _build_job_log_path(process_name)
+    log_handle = open(log_path, "a", encoding="utf-8", errors="replace")
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(script_path)],
+            cwd=str(_repo_root_path()),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception:
+        log_handle.close()
+        raise
     command = [sys.executable, str(script_path)]
     ACTIVE_CHILD_PROCESSES[process_name] = process
+    ACTIVE_CHILD_PROCESS_LOG_PATHS[process_name] = log_path
+    ACTIVE_CHILD_PROCESS_LOG_HANDLES[process_name] = log_handle
     db.start_process(
         process_name,
-        message=_build_process_message(process.pid, script_name, command),
+        message=_build_process_message(process.pid, script_name, command, str(log_path)),
         track_run_history=False,
     )
-    logger.info("Launched '%s' as PID %s", process_name, process.pid)
+    logger.info("Launched '%s' as PID %s (logs: %s)", process_name, process.pid, log_path)
 
 
 def _run_discovery_workflow_subprocess() -> None:

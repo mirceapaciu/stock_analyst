@@ -44,6 +44,29 @@ jobs:
           set -euo pipefail
           docker build -t stock-analysis-app:latest .
 
+      - name: Validate required production secrets
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for key in OPENAI_API_KEY GOOGLE_API_KEY GOOGLE_CSE_ID FINNHUB_API_KEY FMP_API_KEY APP_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required secret: $key"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "One or more required production secrets are missing. Configure environment secrets before deploying."
+            exit 1
+          fi
+
       - name: Gracefully stop running services
         shell: bash
         run: |
@@ -53,6 +76,11 @@ jobs:
       - name: Deploy updated stack
         shell: bash
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           set -euo pipefail

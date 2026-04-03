@@ -67,15 +67,29 @@ def _map_process_status(status: str | None) -> str:
     return "Pending"
 
 
+def _format_timestamp_local(timestamp: str | None) -> str:
+    raw_value = str(timestamp or "").strip()
+    if not raw_value or raw_value.upper() == "N/A":
+        return "N/A"
+
+    parsed_timestamp = pd.to_datetime(raw_value, errors="coerce", utc=True)
+    if pd.isna(parsed_timestamp):
+        return raw_value
+
+    return parsed_timestamp.to_pydatetime().astimezone().isoformat(timespec="seconds")
+
+
 def _resolve_last_run(process_status: dict | None, fallback_timestamp: str | None = None) -> str:
     if process_status:
         status = str(process_status.get("status") or "").strip().upper()
         if status == "STARTED":
-            return process_status.get("start_timestamp") or "N/A"
-        return process_status.get("end_timestamp") or process_status.get("start_timestamp") or "N/A"
+            return _format_timestamp_local(process_status.get("start_timestamp"))
+        return _format_timestamp_local(
+            process_status.get("end_timestamp") or process_status.get("start_timestamp")
+        )
 
     if fallback_timestamp:
-        return str(fallback_timestamp)
+        return _format_timestamp_local(fallback_timestamp)
 
     return "N/A"
 
@@ -137,7 +151,7 @@ def _resolve_scheduler_next_run(process_status: dict | None) -> str:
 
     next_run = str(process_status.get("message") or "").strip()
     if next_run:
-        return next_run
+        return _format_timestamp_local(next_run)
 
     return "N/A"
 
@@ -181,9 +195,19 @@ def _get_scheduler_heartbeat_state(process_status: dict | None) -> tuple[str, st
 
 def _style_last_run_timestamp(column: pd.Series, metadata: pd.DataFrame) -> list[str]:
     styles: list[str] = []
+    now_utc = pd.Timestamp.now(tz="UTC")
 
     for row_index, _value in column.items():
         due_state = str(metadata.at[row_index, "_Due State"] or "").strip()
+        schedule_days = metadata.at[row_index, "_Schedule Days"]
+
+        parsed_last_run = pd.to_datetime(_value, errors="coerce", utc=True)
+        parsed_schedule_days = pd.to_numeric(schedule_days, errors="coerce")
+        if not pd.isna(parsed_last_run) and not pd.isna(parsed_schedule_days):
+            freshness_threshold = now_utc - pd.to_timedelta(float(parsed_schedule_days), unit="d")
+            if parsed_last_run >= freshness_threshold:
+                styles.append("background-color: #dcfce7; color: #14532d;")
+                continue
 
         if due_state == "Waiting":
             styles.append("background-color: #dcfce7; color: #14532d;")
@@ -237,9 +261,9 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
         {
             "Job Type": "Stock recommendation discovery",
             "Last Run Timestamp": _resolve_last_run(discovery_status),
+            "Last Run Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
             "Next Scheduled Run": discovery_next_run,
             "Job PID": _extract_job_pid(discovery_status),
-            "Status": _map_process_status(discovery_status.get("status") if discovery_status else None),
             "Message": _resolve_process_message(discovery_status),
             "Schedule Frequency (days)": _format_schedule_days(discovery_schedule_days),
             "_Raw Status": discovery_raw_status,
@@ -249,9 +273,9 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
         {
             "Job Type": "Tracked Stock recommendation",
             "Last Run Timestamp": _resolve_last_run(tracked_status, tracked_fallback_last_run),
+            "Last Run Status": tracked_display_status,
             "Next Scheduled Run": tracked_next_run,
             "Job PID": _extract_job_pid(tracked_status),
-            "Status": tracked_display_status,
             "Message": _resolve_process_message(tracked_status, tracked_fallback_message),
             "Schedule Frequency (days)": _format_schedule_days(tracked_schedule_days),
             "_Raw Status": tracked_raw_status,
@@ -261,9 +285,9 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
         {
             "Job Type": "Market price refresh",
             "Last Run Timestamp": _resolve_last_run(market_refresh_status),
+            "Last Run Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
             "Next Scheduled Run": market_next_run,
             "Job PID": _extract_job_pid(market_refresh_status),
-            "Status": _map_process_status(market_refresh_status.get("status") if market_refresh_status else None),
             "Message": _resolve_process_message(market_refresh_status),
             "Schedule Frequency (days)": _format_schedule_days(market_refresh_schedule_days),
             "_Raw Status": market_refresh_raw_status,
@@ -303,13 +327,13 @@ display_df = df.drop(columns=["_Raw Status", "_Schedule Days", "_Due State"])
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    running_count = int((display_df["Status"] == "Running").sum())
+    running_count = int((display_df["Last Run Status"] == "Running").sum())
     st.metric("Running Jobs", running_count)
 with col2:
-    completed_count = int((display_df["Status"] == "Completed").sum())
+    completed_count = int((display_df["Last Run Status"] == "Completed").sum())
     st.metric("Completed Jobs", completed_count)
 with col3:
-    failed_count = int((display_df["Status"] == "Failed").sum())
+    failed_count = int((display_df["Last Run Status"] == "Failed").sum())
     st.metric("Failed Jobs", failed_count)
 
 styled_df = display_df.style.apply(
@@ -318,7 +342,7 @@ styled_df = display_df.style.apply(
 )
 
 selection_event = st.dataframe(
-    display_df,
+    styled_df,
     width="stretch",
     hide_index=True,
     on_select="rerun",
@@ -338,11 +362,11 @@ if selected_indices:
     selected_row = display_df.iloc[selected_indices[0]].to_dict()
     st.caption(
         f"Selected job: {selected_row['Job Type']} | "
-        f"Status: {selected_row['Status']} | "
+        f"Status: {selected_row['Last Run Status']} | "
         f"PID: {selected_row['Job PID']}"
     )
 
-selected_is_running = bool(selected_row and selected_row.get("Status") == "Running")
+selected_is_running = bool(selected_row and selected_row.get("Last Run Status") == "Running")
 run_job_disabled = selected_row is None or selected_is_running
 
 if st.button("Run job", width="stretch", disabled=run_job_disabled):

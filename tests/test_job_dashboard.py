@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pandas as pd
+
 
 PAGE_PATH = Path(__file__).resolve().parent.parent / "src" / "ui" / "pages" / "4_Job_Dashboard.py"
 
@@ -184,9 +186,10 @@ def test_market_price_refresh_frequency_uses_market_refresh_interval(monkeypatch
 
     rows, _heartbeat = module.load_job_dashboard_rows()
     market_row = next(row for row in rows if row["Job Type"] == "Market price refresh")
+    expected_next_run = module._format_timestamp_local("2099-01-02T00:00:00+00:00")
 
     assert market_row["Schedule Frequency (days)"] == "Every 1 day(s)"
-    assert market_row["Next Scheduled Run"] == "2099-01-02T00:00:00+00:00"
+    assert market_row["Next Scheduled Run"] == expected_next_run
     assert market_row["Job PID"] == "N/A"
     assert "Due" not in market_row
 
@@ -197,7 +200,7 @@ def test_dashboard_extracts_job_pid_from_process_message(monkeypatch):
     rows, _heartbeat = module.load_job_dashboard_rows()
     discovery_row = next(row for row in rows if row["Job Type"] == "Stock recommendation discovery")
 
-    assert discovery_row["Status"] == "Running"
+    assert discovery_row["Last Run Status"] == "Running"
     assert discovery_row["Job PID"] == "12345"
 
 
@@ -226,6 +229,23 @@ def test_request_job_start_now_skips_when_job_is_running(monkeypatch):
 
     assert started is False
     assert "already running" in message
+
+
+def test_last_run_timestamp_style_is_green_when_within_schedule_frequency(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    recent_last_run = pd.Timestamp.now(tz="UTC") - pd.to_timedelta(1, unit="h")
+    column = pd.Series([recent_last_run.isoformat(timespec="seconds")])
+    metadata = pd.DataFrame(
+        {
+            "_Due State": ["Due"],
+            "_Schedule Days": [1.0],
+        }
+    )
+
+    styles = module._style_last_run_timestamp(column, metadata)
+
+    assert styles == ["background-color: #dcfce7; color: #14532d;"]
 
 
 def test_request_job_start_now_persists_requested_timestamp(monkeypatch):

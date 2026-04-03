@@ -20,7 +20,7 @@ from utils.logger import setup_logging
 from utils.logger import save_workflow_state_to_json
 
 # Configure logging using the standard setup
-setup_logging()
+setup_logging(logname_prefix="job_discovery")
 
 PROCESS_NAME = "recommendations_workflow"
 MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"

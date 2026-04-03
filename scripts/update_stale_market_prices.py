@@ -11,7 +11,7 @@ sys.path.insert(0, str(src_path))
 from services.recommendations import update_market_data_for_recommended_stocks
 from utils.logger import setup_logging
 
-setup_logging()
+setup_logging(logname_prefix="job_market_refresh")
 logger = logging.getLogger("update_stale_market_prices")
 PROCESS_NAME = "market_price_refresh"
 

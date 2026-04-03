@@ -27,7 +27,7 @@ from services.recommendations import (
 )
 from utils.logger import setup_logging, save_workflow_state_to_json
 
-setup_logging()
+setup_logging(logname_prefix="job_tracked_batch")
 
 PROCESS_NAME = "tracked_stock_batch"
 MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"

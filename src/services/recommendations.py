@@ -577,7 +577,11 @@ def update_market_data_for_recommended_stocks(
             if not stocks_to_update:
                 result = {'updated': 0, 'failed': 0, 'skipped': 0}
                 if process_name:
-                    db.end_process(process_name, 'COMPLETED')
+                    db.end_process(
+                        process_name,
+                        'COMPLETED',
+                        "Market refresh completed: updated=0, failed=0, skipped=0",
+                    )
                 return result
 
             # Initialize Finnhub client
@@ -643,12 +647,19 @@ def update_market_data_for_recommended_stocks(
                 'skipped': skipped_count
             }
             if process_name:
-                db.end_process(process_name, 'COMPLETED')
+                db.end_process(
+                    process_name,
+                    'COMPLETED',
+                    (
+                        f"Market refresh completed: updated={updated_count}, "
+                        f"failed={failed_count}, skipped={skipped_count}"
+                    ),
+                )
             return result
         except Exception:
             if process_name:
                 try:
-                    db.end_process(process_name, 'FAILED')
+                    db.end_process(process_name, 'FAILED', 'Market refresh failed')
                 except Exception as process_error:
                     logger.warning(f"Failed to mark process '{process_name}' as FAILED: {process_error}")
             raise

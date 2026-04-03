@@ -52,6 +52,8 @@ jobs:
 
       - name: Deploy updated stack
         shell: bash
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           set -euo pipefail
           docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans

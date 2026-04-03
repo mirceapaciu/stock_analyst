@@ -19,7 +19,7 @@ WORKFLOW_STATE_DIR = LOG_DIR / "workflow_state"
 WORKFLOW_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def setup_logging():
+def setup_logging(logname_prefix: str | None = None):
     """Configure logging to write to both console and file."""
 
     # Create logger
@@ -40,6 +40,16 @@ def setup_logging():
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+    # Optional additional file handler with caller-provided filename prefix.
+    if logname_prefix:
+        normalized_prefix = str(logname_prefix).strip()
+        if normalized_prefix:
+            prefixed_log_file = APP_LOG_DIR / f"{normalized_prefix}_{datetime.now().strftime('%Y%m%d')}.log"
+            prefixed_file_handler = logging.FileHandler(prefixed_log_file, encoding='utf-8')
+            prefixed_file_handler.setLevel(logging.INFO)
+            prefixed_file_handler.setFormatter(formatter)
+            logger.addHandler(prefixed_file_handler)
     
     # Console handler
     console_handler = logging.StreamHandler()

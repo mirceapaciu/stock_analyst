@@ -342,9 +342,27 @@ class RecommendationsDatabase:
                 start_timestamp TIMESTAMP,
                 end_timestamp TIMESTAMP,
                 progress_pct INTEGER DEFAULT 0,
-                status VARCHAR(20) DEFAULT 'STARTED'
+                   status VARCHAR(20) DEFAULT 'STARTED',
+                   message TEXT
             )
         """)
+
+        # Process run history table (one row per run)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS process_run (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                process_name VARCHAR(50) NOT NULL,
+                start_timestamp TIMESTAMP NOT NULL,
+                end_timestamp TIMESTAMP,
+                progress_pct INTEGER DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'STARTED',
+                message TEXT
+            )
+        """)
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_process_run_process_start ON process_run (process_name, start_timestamp DESC)"
+        )
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS batch_schedule (
@@ -413,13 +431,83 @@ class RecommendationsDatabase:
 
         # Migration: Add consecutive_failures column to batch_schedule if it doesn't exist
         self._add_batch_schedule_consecutive_failures_if_missing()
-        
+
+        # Migration: Add message column to process table if it doesn't exist
+        self._add_process_message_column_if_missing()
+
+        # Maintenance: close stale open run-history rows left from older scheduler behavior
+        self._close_stale_process_run_rows()
+
         # Migration: Remove fair_price_dcf column from favorite_stock if it exists (moved to recommended_stock)
         self._remove_fair_price_dcf_from_favorite_stock_if_exists()
         
         # Load website data from CSV if the website table is empty
         self.load_websites_if_empty()
     
+    def _add_process_message_column_if_missing(self) -> None:
+        """Add message column to process table if it doesn't exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(process)")
+        columns = [column[1] for column in cursor.fetchall()]
+
+        if 'message' not in columns:
+            cursor.execute("ALTER TABLE process ADD COLUMN message TEXT")
+            conn.commit()
+            logger.info("Added message column to process table")
+
+        conn.close()
+
+    def _close_stale_process_run_rows(self) -> int:
+        """Close stale STARTED run rows that have a newer row for the same process.
+
+        This repairs historical duplicates created when a trigger inserted more than one
+        process_run STARTED row but only the latest row was later closed.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        maintenance_message = (
+            "Auto-closed stale STARTED run created by legacy scheduler tracking"
+        )
+
+        cursor.execute(
+            """
+            UPDATE process_run
+            SET
+                end_timestamp = datetime('now'),
+                progress_pct = 100,
+                status = 'FAILED',
+                message = CASE
+                    WHEN COALESCE(TRIM(message), '') = '' THEN ?
+                    ELSE message || ' | ' || ?
+                END
+            WHERE
+                status = 'STARTED'
+                AND end_timestamp IS NULL
+                AND EXISTS (
+                    SELECT 1
+                    FROM process_run newer
+                    WHERE newer.process_name = process_run.process_name
+                      AND newer.run_id > process_run.run_id
+                )
+            """,
+            (maintenance_message, maintenance_message),
+        )
+
+        closed_rows = int(cursor.rowcount or 0)
+        conn.commit()
+        conn.close()
+
+        if closed_rows:
+            logger.warning(
+                "Auto-closed %d stale process_run STARTED row(s)",
+                closed_rows,
+            )
+
+        return closed_rows
+
     def _add_page_text_column_if_missing(self):
         """Add page_text column to webpage table if it doesn't exist."""
         conn = self._get_connection()
@@ -2019,49 +2107,82 @@ class RecommendationsDatabase:
             return dict(row)
         return None
     
-    def start_process(self, process_name: str) -> None:
+    def start_process(
+        self,
+        process_name: str,
+        message: str | None = None,
+        track_run_history: bool = True,
+    ) -> None:
         """Mark a process as started by upserting with current timestamp and NULL end_timestamp.
         
         Args:
             process_name: Name of the process to track
+            message: Optional metadata payload (for example scheduler PID details)
+            track_run_history: When False, only update the current process snapshot row
         """
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status)
-            VALUES (?, datetime('now'), NULL, 0, 'STARTED')
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+            VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = NULL,
                 progress_pct = 0,
-                status = 'STARTED'
-        """, (process_name,))
+                status = 'STARTED',
+                message = COALESCE(excluded.message, process.message)
+        """, (process_name, message))
+
+        if track_run_history:
+            cursor.execute("""
+                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+                VALUES (?, datetime('now'), NULL, 0, 'STARTED', ?)
+            """, (process_name, message))
         
         conn.commit()
         conn.close()
         logger.info(f"Process '{process_name}' started")
     
-    def end_process(self, process_name: str, status: str = 'COMPLETED') -> None:
+    def end_process(self, process_name: str, status: str = 'COMPLETED', message: str | None = None) -> None:
         """Mark a process as completed or failed by setting end_timestamp to current time.
-        
+
         Args:
             process_name: Name of the process to mark as complete
             status: Status to set (COMPLETED or FAILED)
+            message: Optional short summary of what the job did
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            UPDATE process 
-            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?
+            UPDATE process
+            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?
             WHERE process_name = ?
-        """, (status, process_name))
-        
+        """, (status, message, process_name))
+
+        cursor.execute("""
+            UPDATE process_run
+            SET end_timestamp = datetime('now'), progress_pct = 100, status = ?, message = ?
+            WHERE run_id = (
+                SELECT run_id
+                FROM process_run
+                WHERE process_name = ? AND end_timestamp IS NULL
+                ORDER BY run_id DESC
+                LIMIT 1
+            )
+        """, (status, message, process_name))
+
+        if cursor.rowcount == 0:
+            cursor.execute("""
+                INSERT INTO process_run (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+                VALUES (?, datetime('now'), datetime('now'), 100, ?, ?)
+            """, (process_name, status, message))
+
         conn.commit()
         conn.close()
         logger.info(f"Process '{process_name}' ended with status {status}")
-    
+
     def update_process_progress(self, process_name: str, progress_pct: int) -> None:
         """Update the progress percentage for a running process.
         
@@ -2077,29 +2198,48 @@ class RecommendationsDatabase:
             SET progress_pct = ?
             WHERE process_name = ?
         """, (progress_pct, process_name))
+
+        cursor.execute("""
+            UPDATE process_run
+            SET progress_pct = ?
+            WHERE run_id = (
+                SELECT run_id
+                FROM process_run
+                WHERE process_name = ? AND end_timestamp IS NULL
+                ORDER BY run_id DESC
+                LIMIT 1
+            )
+        """, (progress_pct, process_name))
         
         conn.commit()
         conn.close()
 
-    def touch_process_heartbeat(self, process_name: str, status: str = 'HEARTBEAT') -> None:
+    def touch_process_heartbeat(
+        self,
+        process_name: str,
+        status: str = 'HEARTBEAT',
+        message: str | None = None,
+    ) -> None:
         """Persist a liveness heartbeat timestamp for a long-running process.
 
         Args:
             process_name: Name of the process to track
             status: Stored status label for the heartbeat row
+            message: Optional metadata payload to persist with the heartbeat
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status)
-            VALUES (?, datetime('now'), datetime('now'), 100, ?)
+            INSERT INTO process (process_name, start_timestamp, end_timestamp, progress_pct, status, message)
+            VALUES (?, datetime('now'), datetime('now'), 100, ?, ?)
             ON CONFLICT(process_name) DO UPDATE SET
                 start_timestamp = datetime('now'),
                 end_timestamp = datetime('now'),
                 progress_pct = 100,
-                status = excluded.status
-        """, (process_name, status))
+                status = excluded.status,
+                message = excluded.message
+        """, (process_name, status, message))
 
         conn.commit()
         conn.close()
@@ -2118,7 +2258,7 @@ class RecommendationsDatabase:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status
+            SELECT process_name, start_timestamp, end_timestamp, progress_pct, status, message
             FROM process
             WHERE process_name = ?
         """, (process_name,))
@@ -2129,6 +2269,37 @@ class RecommendationsDatabase:
         if row:
             return dict(row)
         return None
+
+    def get_process_run_history(self, process_name: str, limit: int = 50) -> List[Dict]:
+        """Get run history for a process, newest first.
+
+        Args:
+            process_name: Name of the process
+            limit: Maximum number of rows to return
+
+        Returns:
+            List of run history rows
+        """
+        safe_limit = max(1, int(limit or 1))
+
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT run_id, process_name, start_timestamp, end_timestamp, progress_pct, status, message
+            FROM process_run
+            WHERE process_name = ?
+            ORDER BY run_id DESC
+            LIMIT ?
+            """,
+            (process_name, safe_limit),
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
     
     def is_process_running(self, process_name: str) -> bool:
         """Check if a process is currently running (status is STARTED).

@@ -27,7 +27,7 @@ from services.recommendations import (
 )
 from utils.logger import setup_logging, save_workflow_state_to_json
 
-setup_logging()
+setup_logging(logname_prefix="job_tracked_batch")
 
 PROCESS_NAME = "tracked_stock_batch"
 MARKET_REFRESH_PROCESS_NAME = "market_price_refresh"
@@ -138,7 +138,11 @@ def run_tracked_stock_batch() -> int:
                 f"Skipping tracked batch: quota exhausted (used={calls_used_today}, "
                 f"quota={CSE_DAILY_QUOTA})"
             )
-            db.end_process(PROCESS_NAME, "COMPLETED")
+            db.end_process(
+                PROCESS_NAME,
+                "COMPLETED",
+                f"Skipped tracked batch: quota exhausted (used={calls_used_today}, quota={CSE_DAILY_QUOTA})",
+            )
             return 0
 
         max_tickers_by_quota = remaining_calls // calls_per_ticker
@@ -147,7 +151,7 @@ def run_tracked_stock_batch() -> int:
 
         if not batch_tickers:
             logger.info("No tracked tickers to process in this invocation")
-            db.end_process(PROCESS_NAME, "COMPLETED")
+            db.end_process(PROCESS_NAME, "COMPLETED", "No tracked tickers to process in this invocation")
             return 0
 
         logger.info(
@@ -204,7 +208,7 @@ def run_tracked_stock_batch() -> int:
             logger.warning(f"Market data update failed after batch run: {market_error}")
 
         logger.info("Tracked batch completed successfully")
-        db.end_process(PROCESS_NAME, "COMPLETED")
+        db.end_process(PROCESS_NAME, "COMPLETED", result.get("status"))
         return 0
 
     except KeyboardInterrupt:
@@ -214,7 +218,7 @@ def run_tracked_stock_batch() -> int:
             processed_tickers=[],
             status="FAILED",
         )
-        db.end_process(PROCESS_NAME, "FAILED")
+        db.end_process(PROCESS_NAME, "FAILED", "Tracked batch interrupted by user")
         return 1
     except Exception as error:
         logger.error(f"Tracked batch failed: {error}", exc_info=True)
@@ -223,7 +227,7 @@ def run_tracked_stock_batch() -> int:
             processed_tickers=[],
             status="FAILED",
         )
-        db.end_process(PROCESS_NAME, "FAILED")
+        db.end_process(PROCESS_NAME, "FAILED", f"Tracked batch failed: {error}")
         return 1
 
 

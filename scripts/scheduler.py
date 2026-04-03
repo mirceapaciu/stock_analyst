@@ -211,7 +211,11 @@ def _launch_job_subprocess(job_id: str) -> None:
     )
     command = [sys.executable, str(script_path)]
     ACTIVE_CHILD_PROCESSES[process_name] = process
-    db.start_process(process_name, message=_build_process_message(process.pid, script_name, command))
+    db.start_process(
+        process_name,
+        message=_build_process_message(process.pid, script_name, command),
+        track_run_history=False,
+    )
     logger.info("Launched '%s' as PID %s", process_name, process.pid)
 
 

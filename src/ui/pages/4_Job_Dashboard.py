@@ -34,6 +34,7 @@ SCHEDULER_HEARTBEAT_STALE_MINUTES = 3
 SCHEDULER_NEXT_RUN_DISCOVERY_PROCESS = "scheduler_next_run_discovery_workflow"
 SCHEDULER_NEXT_RUN_TRACKED_PROCESS = "scheduler_next_run_tracked_stock_batch"
 SCHEDULER_NEXT_RUN_MARKET_PROCESS = "scheduler_next_run_market_price_refresh"
+REQUEST_QUEUE_WAIT_HINT = "Scheduler checks manual start requests every ~60 seconds."
 JOB_CONFIG_BY_TYPE = {
     "Stock recommendation discovery": {
         "process": DISCOVERY_PROCESS,
@@ -48,6 +49,75 @@ JOB_CONFIG_BY_TYPE = {
         "request_process": "scheduler_next_start_market_price_refresh",
     },
 }
+
+
+def _resolve_process_name_for_job_type(job_type: str) -> str | None:
+    config = JOB_CONFIG_BY_TYPE.get(job_type)
+    if not config:
+        return None
+    return config.get("process")
+
+
+def _resolve_request_process_for_job_type(job_type: str) -> str | None:
+    config = JOB_CONFIG_BY_TYPE.get(job_type)
+    if not config:
+        return None
+    return config.get("request_process")
+
+
+def _load_job_start_request_status(job_type: str) -> dict | None:
+    request_process = _resolve_request_process_for_job_type(job_type)
+    if not request_process:
+        return None
+
+    with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+        return db.get_process_status(request_process)
+
+
+def _resolve_start_request_feedback(request_status: dict | None) -> tuple[str | None, str]:
+    if not request_status:
+        return None, ""
+
+    request_state = str(request_status.get("status") or "").strip().upper()
+    request_message = str(request_status.get("message") or "").strip()
+
+    if request_state == "REQUESTED":
+        request_time = _format_timestamp_local(request_message) if request_message else "N/A"
+        return "info", f"Run request queued at {request_time}. {REQUEST_QUEUE_WAIT_HINT}"
+
+    if request_state == "FAILED":
+        details = request_message or "Scheduler rejected the start request."
+        return "error", f"Run request failed: {details}"
+
+    if request_state == "CONSUMED":
+        consumed_time = _format_timestamp_local(request_message) if request_message else "N/A"
+        return "success", f"Run request accepted by scheduler at {consumed_time}."
+
+    return None, ""
+
+
+def _show_flash_feedback() -> None:
+    session_state = getattr(st, "session_state", None)
+    if session_state is None:
+        return
+
+    flash = session_state.pop("job_run_feedback", None)
+    if not isinstance(flash, dict):
+        return
+
+    level = str(flash.get("level") or "info").strip().lower()
+    message = str(flash.get("message") or "").strip()
+    if not message:
+        return
+
+    if level == "success":
+        st.success(message)
+    elif level == "warning":
+        st.warning(message)
+    elif level == "error":
+        st.error(message)
+    else:
+        st.info(message)
 
 
 def _format_schedule_days(days: float) -> str:
@@ -166,6 +236,26 @@ def _resolve_due_state(raw_status: str | None, next_run_timestamp: str | None) -
         return "Unknown"
 
     return "Due" if pd.Timestamp.now(tz="UTC") >= parsed_next_run else "Waiting"
+
+
+def _build_run_history_display_df(runs: list[dict]) -> pd.DataFrame:
+    if not runs:
+        return pd.DataFrame(columns=["Run ID", "Start Timestamp", "End Timestamp", "Status", "Progress", "Message"])
+
+    rows: list[dict] = []
+    for run in runs:
+        rows.append(
+            {
+                "Run ID": run.get("run_id"),
+                "Start Timestamp": _format_timestamp_local(run.get("start_timestamp")),
+                "End Timestamp": _format_timestamp_local(run.get("end_timestamp")),
+                "Status": _map_process_status(run.get("status")),
+                "Progress": f"{int(run.get('progress_pct') or 0)}%",
+                "Message": str(run.get("message") or "N/A"),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def _resolve_heartbeat_timestamp(process_status: dict | None) -> str:
@@ -297,10 +387,18 @@ def load_job_dashboard_rows() -> tuple[list[dict], dict | None]:
     ], scheduler_heartbeat_status
 
 
+@st.cache_data(ttl=60)
+def load_job_run_history(process_name: str, limit: int = 20) -> list[dict]:
+    with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
+        return db.get_process_run_history(process_name, limit=limit)
+
+
 st.title("🧭 Job Dashboard")
 st.markdown("""
 View status for scheduled jobs, including last run timestamp, status, and configured frequency.
 """)
+
+_show_flash_feedback()
 
 with st.sidebar:
     st.header("Actions")
@@ -367,13 +465,53 @@ if selected_indices:
     )
 
 selected_is_running = bool(selected_row and selected_row.get("Last Run Status") == "Running")
-run_job_disabled = selected_row is None or selected_is_running
+selected_start_request_status: dict | None = None
+selected_request_level: str | None = None
+selected_request_message = ""
+
+if selected_row:
+    selected_start_request_status = _load_job_start_request_status(str(selected_row.get("Job Type") or ""))
+    selected_request_level, selected_request_message = _resolve_start_request_feedback(
+        selected_start_request_status
+    )
+
+    if selected_request_level == "success":
+        st.success(selected_request_message)
+    elif selected_request_level == "error":
+        st.error(selected_request_message)
+    elif selected_request_level == "info":
+        st.info(selected_request_message)
+
+selected_is_request_pending = bool(
+    selected_start_request_status
+    and str(selected_start_request_status.get("status") or "").strip().upper() == "REQUESTED"
+)
+
+run_job_disabled = selected_row is None or selected_is_running or selected_is_request_pending
 
 if st.button("Run job", width="stretch", disabled=run_job_disabled):
     started, message = _request_job_start_now(selected_row["Job Type"])
+    session_state = getattr(st, "session_state", None)
     if started:
-        st.success(message)
+        if session_state is not None:
+            session_state["job_run_feedback"] = {"level": "success", "message": message}
+        else:
+            st.success(message)
         st.cache_data.clear()
         st.rerun()
     else:
-        st.warning(message)
+        if session_state is not None:
+            session_state["job_run_feedback"] = {"level": "warning", "message": message}
+        else:
+            st.warning(message)
+        st.rerun()
+
+if selected_row:
+    selected_job_type = str(selected_row.get("Job Type") or "")
+    selected_process_name = _resolve_process_name_for_job_type(selected_job_type)
+
+    if selected_process_name:
+        st.markdown("### Selected Job Run History")
+        history_rows = load_job_run_history(selected_process_name, limit=20)
+        history_df = _build_run_history_display_df(history_rows)
+        st.dataframe(history_df, width="stretch", hide_index=True)

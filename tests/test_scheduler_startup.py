@@ -39,7 +39,12 @@ class _SchedulerDbStub:
             "message": message,
         }
 
-    def start_process(self, process_name: str, message: str | None = None):
+    def start_process(
+        self,
+        process_name: str,
+        message: str | None = None,
+        track_run_history: bool = True,
+    ):
         self.start_calls.append((process_name, message))
         self._statuses[process_name] = {
             "status": "STARTED",

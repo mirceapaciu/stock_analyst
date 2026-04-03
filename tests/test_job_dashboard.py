@@ -51,6 +51,7 @@ class _StreamlitStub(ModuleType):
         super().__init__("streamlit")
         self.cache_data = _CacheData()
         self.sidebar = _Sidebar()
+        self.session_state = {}
 
     def set_page_config(self, *_args, **_kwargs):
         return None
@@ -74,6 +75,12 @@ class _StreamlitStub(ModuleType):
         return None
 
     def success(self, *_args, **_kwargs):
+        return None
+
+    def warning(self, *_args, **_kwargs):
+        return None
+
+    def info(self, *_args, **_kwargs):
         return None
 
     def error(self, *_args, **_kwargs):
@@ -112,6 +119,28 @@ class _RecommendationsDbStub:
 
     def get_batch_schedule_status(self, _workflow_type):
         return None
+
+    def get_process_run_history(self, _process_name, limit=20):
+        return [
+            {
+                "run_id": 2,
+                "process_name": "recommendations_workflow",
+                "start_timestamp": "2099-01-01T01:00:00+00:00",
+                "end_timestamp": "2099-01-01T01:10:00+00:00",
+                "progress_pct": 100,
+                "status": "COMPLETED",
+                "message": "ok",
+            },
+            {
+                "run_id": 1,
+                "process_name": "recommendations_workflow",
+                "start_timestamp": "2099-01-01T00:00:00+00:00",
+                "end_timestamp": "2099-01-01T00:05:00+00:00",
+                "progress_pct": 100,
+                "status": "FAILED",
+                "message": "boom",
+            },
+        ][:limit]
 
 
 class _RecommendationsDbStubWithPid(_RecommendationsDbStub):
@@ -279,3 +308,70 @@ def test_request_job_start_now_persists_requested_timestamp(monkeypatch):
     assert process_name == "scheduler_next_start_discovery_workflow"
     assert status == "REQUESTED"
     assert payload is not None
+
+
+def test_load_job_run_history_returns_rows(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    history = module.load_job_run_history("recommendations_workflow", limit=2)
+
+    assert len(history) == 2
+    assert history[0]["run_id"] == 2
+
+
+def test_build_run_history_display_df_formats_rows(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    display_df = module._build_run_history_display_df(
+        [
+            {
+                "run_id": 7,
+                "start_timestamp": "2099-01-01T00:00:00+00:00",
+                "end_timestamp": "2099-01-01T00:10:00+00:00",
+                "progress_pct": 100,
+                "status": "COMPLETED",
+                "message": "done",
+            }
+        ]
+    )
+
+    assert list(display_df.columns) == [
+        "Run ID",
+        "Start Timestamp",
+        "End Timestamp",
+        "Status",
+        "Progress",
+        "Message",
+    ]
+    assert display_df.iloc[0]["Run ID"] == 7
+    assert display_df.iloc[0]["Status"] == "Completed"
+    assert display_df.iloc[0]["Progress"] == "100%"
+
+
+def test_resolve_start_request_feedback_for_requested_state(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    level, message = module._resolve_start_request_feedback(
+        {
+            "status": "REQUESTED",
+            "message": "2099-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert level == "info"
+    assert "Run request queued" in message
+    assert "~60 seconds" in message
+
+
+def test_resolve_start_request_feedback_for_consumed_state(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    level, message = module._resolve_start_request_feedback(
+        {
+            "status": "CONSUMED",
+            "message": "2099-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert level == "success"
+    assert "accepted by scheduler" in message

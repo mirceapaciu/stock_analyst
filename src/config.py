@@ -75,6 +75,10 @@ MARKET_PRICE_REFRESH_INTERVAL_HOURS = max(
     1,
     int(os.getenv("MARKET_PRICE_REFRESH_INTERVAL_HOURS", "24")),  # Default to daily market price refresh
 )
+MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE = max(
+    1,
+    int(os.getenv("MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE", "20")),
+)
 SWEEP_STALE_DAYS = max(1, int(os.getenv("SWEEP_STALE_DAYS", "14")))
 
 TRACKED_BATCH_SITES = [

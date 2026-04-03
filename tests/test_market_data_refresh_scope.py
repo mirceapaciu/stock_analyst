@@ -39,6 +39,9 @@ class DummyRecommendationsDatabase:
     def end_process(self, process_name, status="COMPLETED", message=None):
         self.process_events.append(("end", process_name, status, message))
 
+    def update_process_progress(self, process_name, progress_pct):
+        self.process_events.append(("progress", process_name, progress_pct))
+
 
 class FakeFinnhubClient:
     def __init__(self, api_key):
@@ -157,10 +160,46 @@ def test_update_market_data_tracks_process_when_process_name_is_provided(monkeyp
     assert result == {"updated": 1, "failed": 0, "skipped": 0}
     assert db.process_events == [
         ("start", "market_price_refresh"),
+        ("progress", "market_price_refresh", 100),
         (
             "end",
             "market_price_refresh",
             "COMPLETED",
             "Market refresh completed: updated=1, failed=0, skipped=0",
+        ),
+    ]
+
+
+def test_update_market_data_tracks_progress_in_configurable_blocks(monkeypatch):
+    stocks = [
+        {"stock_id": i, "ticker": f"T{i}", "exchange": "NASDAQ", "market_date": None}
+        for i in range(1, 46)
+    ]
+    db = DummyRecommendationsDatabase(stocks_to_update=stocks)
+
+    monkeypatch.setattr(recommendation_service, "FINNHUB_API_KEY", "test-key")
+    monkeypatch.setattr(recommendation_service, "RecommendationsDatabase", lambda _db_path: db)
+    monkeypatch.setitem(
+        sys.modules,
+        "finnhub",
+        SimpleNamespace(Client=FakeFinnhubClient),
+    )
+
+    result = recommendation_service.update_market_data_for_recommended_stocks(
+        process_name="market_price_refresh",
+        progress_update_block_size=20,
+    )
+
+    assert result == {"updated": 45, "failed": 0, "skipped": 0}
+    assert db.process_events == [
+        ("start", "market_price_refresh"),
+        ("progress", "market_price_refresh", 44),
+        ("progress", "market_price_refresh", 88),
+        ("progress", "market_price_refresh", 100),
+        (
+            "end",
+            "market_price_refresh",
+            "COMPLETED",
+            "Market refresh completed: updated=45, failed=0, skipped=0",
         ),
     ]

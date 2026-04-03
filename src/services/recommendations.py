@@ -7,7 +7,13 @@ from datetime import date
 import re
 from repositories.recommendations_db import RecommendationsDatabase
 from recommendations.fmp_client import FMPClient
-from config import RECOMMENDATIONS_DB_PATH, DB_PATH, FMP_API_KEY, FINNHUB_API_KEY
+from config import (
+    RECOMMENDATIONS_DB_PATH,
+    DB_PATH,
+    FMP_API_KEY,
+    FINNHUB_API_KEY,
+    MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +530,7 @@ def update_market_data_for_recommended_stocks(
     workflow_tickers: Optional[Iterable[str]] = None,
     db_path: str = RECOMMENDATIONS_DB_PATH,
     process_name: Optional[str] = None,
+    progress_update_block_size: int = MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE,
 ) -> Dict[str, int]:
     """Update market data for recommended stocks with stale market_date.
     
@@ -538,6 +545,7 @@ def update_market_data_for_recommended_stocks(
         workflow_tickers: Optional iterable of tickers to limit updates to workflow stocks only
         db_path: Path to recommendations database
         process_name: Optional process name to track status in the process table
+        progress_update_block_size: Update process progress every N processed tickers
         
     Returns:
         Dictionary with counts: {'updated': int, 'failed': int, 'skipped': int}
@@ -586,12 +594,14 @@ def update_market_data_for_recommended_stocks(
 
             # Initialize Finnhub client
             finnhub_client = finnhub.Client(api_key=FINNHUB_API_KEY)
+            total_stocks = len(stocks_to_update)
+            safe_progress_block_size = max(1, int(progress_update_block_size or 1))
 
             updated_count = 0
             failed_count = 0
             skipped_count = 0
 
-            for stock in stocks_to_update:
+            for index, stock in enumerate(stocks_to_update, start=1):
                 stock_id = stock['stock_id']
                 ticker = stock['ticker']
                 exchange = stock['exchange']
@@ -639,7 +649,12 @@ def update_market_data_for_recommended_stocks(
                 except Exception as e:
                     logger.error(f"Error updating {ticker}: {e}")
                     failed_count += 1
-                    continue
+                finally:
+                    if process_name and (
+                        index % safe_progress_block_size == 0 or index == total_stocks
+                    ):
+                        progress_pct = int((index / total_stocks) * 100)
+                        db.update_process_progress(process_name, progress_pct)
 
             result = {
                 'updated': updated_count,

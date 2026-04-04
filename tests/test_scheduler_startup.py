@@ -389,3 +389,108 @@ def test_apply_requested_starts_consumes_request_and_updates_job(monkeypatch):
     assert request_status["status"] == "CONSUMED"
     assert request_status["message"] is not None
     assert job.modified_next_run_time is not None
+
+
+def test_run_job_with_group_lock_queues_when_other_job_holds_lock(monkeypatch):
+    scheduler = importlib.import_module("scheduler")
+
+    monkeypatch.setattr(
+        scheduler,
+        "JOB_GROUP_BY_JOB_ID",
+        {
+            "discovery_workflow": "recommendations_workflows",
+            "tracked_stock_batch": "recommendations_workflows",
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "ACTIVE_JOB_GROUP_LOCKS",
+        {"recommendations_workflows": "discovery_workflow"},
+    )
+    monkeypatch.setattr(scheduler, "WAITING_JOB_DUE_TIMES_BY_GROUP", {})
+
+    launch_calls: list[str] = []
+    monkeypatch.setattr(
+        scheduler,
+        "_launch_job_subprocess",
+        lambda job_id: launch_calls.append(job_id) or True,
+    )
+
+    scheduler._run_job_with_group_lock("tracked_stock_batch")
+
+    assert not launch_calls
+    waiting = scheduler.WAITING_JOB_DUE_TIMES_BY_GROUP.get("recommendations_workflows")
+    assert waiting is not None
+    assert "tracked_stock_batch" in waiting
+
+
+def test_release_group_lock_starts_waiting_job_by_earliest_due_time(monkeypatch):
+    scheduler = importlib.import_module("scheduler")
+
+    class _DummyJob:
+        def __init__(self):
+            self.modified_next_run_time = None
+
+        def modify(self, next_run_time=None):
+            self.modified_next_run_time = next_run_time
+
+    class _DummyScheduler:
+        def __init__(self):
+            self.jobs = {
+                "discovery_workflow": _DummyJob(),
+                "tracked_stock_batch": _DummyJob(),
+            }
+
+        def get_job(self, job_id: str):
+            return self.jobs.get(job_id)
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        scheduler,
+        "JOB_GROUP_BY_JOB_ID",
+        {
+            "discovery_workflow": "recommendations_workflows",
+            "tracked_stock_batch": "recommendations_workflows",
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "ACTIVE_JOB_GROUP_LOCKS",
+        {"recommendations_workflows": "discovery_workflow"},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "WAITING_JOB_DUE_TIMES_BY_GROUP",
+        {
+            "recommendations_workflows": {
+                "tracked_stock_batch": now,
+            }
+        },
+    )
+
+    dummy_scheduler = _DummyScheduler()
+    monkeypatch.setattr(scheduler, "ACTIVE_SCHEDULER", dummy_scheduler)
+
+    scheduler._release_group_lock_for_job("discovery_workflow", reason="completed")
+
+    assert "recommendations_workflows" not in scheduler.ACTIVE_JOB_GROUP_LOCKS
+    assert "recommendations_workflows" not in scheduler.WAITING_JOB_DUE_TIMES_BY_GROUP
+    assert dummy_scheduler.jobs["tracked_stock_batch"].modified_next_run_time is not None
+
+
+def test_build_scheduler_group_maps_rejects_unknown_job_id():
+    scheduler = importlib.import_module("scheduler")
+
+    try:
+        scheduler._build_scheduler_group_maps(
+            [
+                {
+                    "job_group": "recommendations_workflows",
+                    "jobs": ["discovery_workflow", "unknown_job"],
+                }
+            ]
+        )
+    except ValueError as error:
+        assert "Unknown scheduler job id" in str(error)
+    else:
+        raise AssertionError("Expected ValueError for unknown scheduler job id")

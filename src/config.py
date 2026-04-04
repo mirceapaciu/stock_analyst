@@ -151,3 +151,12 @@ RECOMMENDATION_LOOKBACK_MONTHS = max(0, int(os.getenv("RECOMMENDATION_LOOKBACK_M
 # APScheduler persistent jobstore (used by scripts/scheduler.py)
 default_scheduler_jobstore_url = f"sqlite:///{Path(RECOMMENDATIONS_DB_PATH).resolve().as_posix()}"
 SCHEDULER_JOBSTORE_URL = os.getenv("SCHEDULER_JOBSTORE_URL", default_scheduler_jobstore_url)
+
+# Scheduler mutual exclusion groups.
+# Jobs listed in the same group cannot run concurrently.
+SCHEDULER_JOB_GROUPS = [
+    {
+        "job_group": "recommendations_workflows",
+        "jobs": ["discovery_workflow", "tracked_stock_batch"],
+    }
+]

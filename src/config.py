@@ -22,7 +22,7 @@ if EFS_MOUNT_PATH:
     DB_PATH = os.getenv("DB_PATH", str(Path(EFS_MOUNT_PATH) / "data" / "db" / "stocks.duckdb"))
     RECOMMENDATIONS_DB_PATH = os.getenv("RECOMMENDATIONS_DB_PATH", str(Path(EFS_MOUNT_PATH) / "data" / "db" / "recommendations.db"))
 else:
-    # Use local paths (for local development or Lightsail)
+    # Use local paths
     # Ensure absolute path to avoid relative path issues
     default_db_path = (BASE_DIR / "data" / "db" / "stocks.duckdb").resolve()
     default_rec_path = (BASE_DIR / "data" / "db" / "recommendations.db").resolve()

@@ -5,3 +5,4 @@
 | FEAT-003 | feature | high | resolved | Market prices only for workflow stocks |  |
 | FEAT-004 | feature | high | resolved | Jobs dashboard | UI dashboard that shows when the jobs last ran |
 | FEAT-005 | feature | high | resolved | Job group lock | Recommendation discovery and tracked stock jobs should not run at the same time |
+| BUG-006 |	bug | high | resolved |	The recommendations do not contain saved PDF|  |

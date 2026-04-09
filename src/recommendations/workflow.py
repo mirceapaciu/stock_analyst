@@ -1470,6 +1470,23 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             return_metrics=True,
         )
 
+        # Keep lightweight HTTP fetch by default, but ensure recommendation pages
+        # still get a PDF artifact for downstream UI links and auditing.
+        if not pdf_bytes and stock_recommendations:
+            try:
+                _, _, _, fallback_pdf_bytes = fetch_webpage_content(
+                    url,
+                    headers,
+                    use_browser=True,
+                )
+                if fallback_pdf_bytes:
+                    pdf_bytes = fallback_pdf_bytes
+                    logger.info(f"Captured fallback PDF for recommendation page: {url}")
+            except Exception as fallback_error:
+                logger.warning(
+                    f"Failed fallback PDF capture for recommendation page {url}: {fallback_error}"
+                )
+
         result = {
             'url': url,
             'webpage_title': webpage_title,

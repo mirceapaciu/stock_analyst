@@ -240,3 +240,86 @@ class TestScrapeSinglePageBlockedPages:
         assert result["fetch_metrics"]["blocked_cached_skips"] == 1
         assert result["matched_blocked_pattern"] in db.get_blocked_url_patterns()
         mock_fetch.assert_not_called()
+
+
+class TestScrapeSinglePagePdfFallback:
+    def test_recommendation_page_uses_browser_fallback_to_capture_pdf(self):
+        """When initial fetch has no PDF bytes, recommendation pages should trigger browser PDF capture."""
+        search_result = {
+            "href": "https://example.com/article",
+            "title": "Example title",
+            "excerpt_date": "2026-03-28",
+            "is_tracked_stock_search": False,
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+
+        db = MagicMock()
+        db.needs_browser_rendering.return_value = False
+        db.get_blocked_url_match.return_value = None
+
+        html = "<html><body><article><p>Readable stock article text about AAPL</p></article></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content_with_policy",
+            return_value=("Readable stock article text about AAPL", soup, html, None),
+        ), patch(
+            "recommendations.workflow.fetch_webpage_content",
+            return_value=("Readable stock article text about AAPL", soup, html, b"%PDF-1.4-fallback"),
+        ) as mock_fetch_fallback, patch(
+            "recommendations.workflow.extract_date_from_webpage",
+            return_value=datetime(2026, 3, 28),
+        ), patch(
+            "recommendations.workflow.extract_stock_recommendations_with_llm",
+            return_value=([
+                {
+                    "ticker": "AAPL",
+                    "validation_status": "validated",
+                    "quality_score": 80,
+                }
+            ], {"hallucinated_tickers": 0, "low_quality_filtered": 0}),
+        ):
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["pdf_content"] == b"%PDF-1.4-fallback"
+        mock_fetch_fallback.assert_called_once_with(
+            search_result["href"],
+            headers,
+            use_browser=True,
+        )
+
+    def test_non_recommendation_page_does_not_trigger_pdf_fallback(self):
+        """Pages without recommendations should not do an extra browser fetch just to capture PDF."""
+        search_result = {
+            "href": "https://example.com/no-rec-article",
+            "title": "No recommendation title",
+            "excerpt_date": "2026-03-28",
+            "is_tracked_stock_search": False,
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+
+        db = MagicMock()
+        db.needs_browser_rendering.return_value = False
+        db.get_blocked_url_match.return_value = None
+
+        html = "<html><body><article><p>Readable article text</p></article></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content_with_policy",
+            return_value=("Readable article text", soup, html, None),
+        ), patch(
+            "recommendations.workflow.fetch_webpage_content",
+        ) as mock_fetch_fallback, patch(
+            "recommendations.workflow.extract_date_from_webpage",
+            return_value=datetime(2026, 3, 28),
+        ), patch(
+            "recommendations.workflow.extract_stock_recommendations_with_llm",
+            return_value=([], {"hallucinated_tickers": 0, "low_quality_filtered": 0}),
+        ):
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["pdf_content"] is None
+        mock_fetch_fallback.assert_not_called()

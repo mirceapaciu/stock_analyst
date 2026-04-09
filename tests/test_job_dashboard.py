@@ -331,6 +331,8 @@ def test_build_run_history_display_df_formats_rows(monkeypatch):
                 "progress_pct": 100,
                 "status": "COMPLETED",
                 "message": "done",
+                "exit_code": 0,
+                "failure_log_tail": "",
             }
         ]
     )
@@ -341,11 +343,29 @@ def test_build_run_history_display_df_formats_rows(monkeypatch):
         "End Timestamp",
         "Status",
         "Progress",
+        "Exit Code",
         "Message",
+        "Failure Log Tail",
     ]
     assert display_df.iloc[0]["Run ID"] == 7
     assert display_df.iloc[0]["Status"] == "Completed"
     assert display_df.iloc[0]["Progress"] == "100%"
+    assert display_df.iloc[0]["Exit Code"] == 0
+
+
+def test_latest_failed_log_tail_returns_first_failed_tail(monkeypatch):
+    module = _load_dashboard_module(monkeypatch)
+
+    tail = module._latest_failed_log_tail(
+        [
+            {"status": "COMPLETED", "failure_log_tail": None},
+            {"status": "FAILED", "failure_log_tail": "trace line 1\ntrace line 2"},
+            {"status": "FAILED", "failure_log_tail": "older tail"},
+        ]
+    )
+
+    assert tail is not None
+    assert "trace line 1" in tail
 
 
 def test_resolve_start_request_feedback_for_requested_state(monkeypatch):

@@ -22,7 +22,7 @@ if EFS_MOUNT_PATH:
     DB_PATH = os.getenv("DB_PATH", str(Path(EFS_MOUNT_PATH) / "data" / "db" / "stocks.duckdb"))
     RECOMMENDATIONS_DB_PATH = os.getenv("RECOMMENDATIONS_DB_PATH", str(Path(EFS_MOUNT_PATH) / "data" / "db" / "recommendations.db"))
 else:
-    # Use local paths (for local development or Lightsail)
+    # Use local paths
     # Ensure absolute path to avoid relative path issues
     default_db_path = (BASE_DIR / "data" / "db" / "stocks.duckdb").resolve()
     default_rec_path = (BASE_DIR / "data" / "db" / "recommendations.db").resolve()
@@ -74,6 +74,10 @@ DISCOVERY_INTERVAL_HOURS = max(
 MARKET_PRICE_REFRESH_INTERVAL_HOURS = max(
     1,
     int(os.getenv("MARKET_PRICE_REFRESH_INTERVAL_HOURS", "24")),  # Default to daily market price refresh
+)
+MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE = max(
+    1,
+    int(os.getenv("MARKET_PRICE_REFRESH_PROGRESS_BLOCK_SIZE", "20")),
 )
 SWEEP_STALE_DAYS = max(1, int(os.getenv("SWEEP_STALE_DAYS", "14")))
 
@@ -147,3 +151,12 @@ RECOMMENDATION_LOOKBACK_MONTHS = max(0, int(os.getenv("RECOMMENDATION_LOOKBACK_M
 # APScheduler persistent jobstore (used by scripts/scheduler.py)
 default_scheduler_jobstore_url = f"sqlite:///{Path(RECOMMENDATIONS_DB_PATH).resolve().as_posix()}"
 SCHEDULER_JOBSTORE_URL = os.getenv("SCHEDULER_JOBSTORE_URL", default_scheduler_jobstore_url)
+
+# Scheduler mutual exclusion groups.
+# Jobs listed in the same group cannot run concurrently.
+SCHEDULER_JOB_GROUPS = [
+    {
+        "job_group": "recommendations_workflows",
+        "jobs": ["discovery_workflow", "tracked_stock_batch"],
+    }
+]

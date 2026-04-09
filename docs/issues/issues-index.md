@@ -4,3 +4,4 @@
 | BUG-002 |	bug | high | resolved |	Garbled page_text for Brotli-compressed responses |	requests doesn't decompress br; fool.com affected |
 | FEAT-003 | feature | high | resolved | Market prices only for workflow stocks |  |
 | FEAT-004 | feature | high | resolved | Jobs dashboard | UI dashboard that shows when the jobs last ran |
+| FEAT-005 | feature | high | resolved | Job group lock | Recommendation discovery and tracked stock jobs should not run at the same time |

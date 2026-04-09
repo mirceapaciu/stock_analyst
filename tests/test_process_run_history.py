@@ -52,6 +52,32 @@ def test_process_run_history_returns_newest_first(tmp_path, monkeypatch):
     assert history[1]["status"] == "FAILED"
 
 
+def test_process_run_history_persists_exit_code_and_failure_log_tail(tmp_path, monkeypatch):
+    monkeypatch.setenv("USE_S3_SYNC", "false")
+    db_path = tmp_path / "process_run_history_5.duckdb"
+    db = RecommendationsDatabase(str(db_path))
+
+    db.start_process("tracked_stock_batch", message="run-with-failure")
+    db.end_process(
+        "tracked_stock_batch",
+        status="FAILED",
+        message="child process exited",
+        exit_code=9,
+        failure_log_tail="Traceback: boom",
+    )
+
+    history = db.get_process_run_history("tracked_stock_batch", limit=10)
+    status = db.get_process_status("tracked_stock_batch")
+
+    assert len(history) == 1
+    assert history[0]["status"] == "FAILED"
+    assert history[0]["exit_code"] == 9
+    assert history[0]["failure_log_tail"] == "Traceback: boom"
+    assert status is not None
+    assert status["exit_code"] == 9
+    assert status["failure_log_tail"] == "Traceback: boom"
+
+
 def test_snapshot_only_start_does_not_create_extra_run(tmp_path, monkeypatch):
     monkeypatch.setenv("USE_S3_SYNC", "false")
     db_path = tmp_path / "process_run_history_3.duckdb"

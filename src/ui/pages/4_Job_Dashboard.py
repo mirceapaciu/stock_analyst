@@ -240,10 +240,22 @@ def _resolve_due_state(raw_status: str | None, next_run_timestamp: str | None) -
 
 def _build_run_history_display_df(runs: list[dict]) -> pd.DataFrame:
     if not runs:
-        return pd.DataFrame(columns=["Run ID", "Start Timestamp", "End Timestamp", "Status", "Progress", "Message"])
+        return pd.DataFrame(
+            columns=[
+                "Run ID",
+                "Start Timestamp",
+                "End Timestamp",
+                "Status",
+                "Progress",
+                "Exit Code",
+                "Message",
+                "Failure Log Tail",
+            ]
+        )
 
     rows: list[dict] = []
     for run in runs:
+        failure_tail = str(run.get("failure_log_tail") or "").strip()
         rows.append(
             {
                 "Run ID": run.get("run_id"),
@@ -251,11 +263,26 @@ def _build_run_history_display_df(runs: list[dict]) -> pd.DataFrame:
                 "End Timestamp": _format_timestamp_local(run.get("end_timestamp")),
                 "Status": _map_process_status(run.get("status")),
                 "Progress": f"{int(run.get('progress_pct') or 0)}%",
+                "Exit Code": run.get("exit_code") if run.get("exit_code") is not None else "N/A",
                 "Message": str(run.get("message") or "N/A"),
+                "Failure Log Tail": failure_tail if failure_tail else "N/A",
             }
         )
 
     return pd.DataFrame(rows)
+
+
+def _latest_failed_log_tail(runs: list[dict]) -> str | None:
+    for run in runs:
+        status = str(run.get("status") or "").strip().upper()
+        if not status.startswith("FAILED"):
+            continue
+
+        tail = str(run.get("failure_log_tail") or "").strip()
+        if tail:
+            return tail
+
+    return None
 
 
 def _resolve_heartbeat_timestamp(process_status: dict | None) -> str:
@@ -515,3 +542,8 @@ if selected_row:
         history_rows = load_job_run_history(selected_process_name, limit=20)
         history_df = _build_run_history_display_df(history_rows)
         st.dataframe(history_df, width="stretch", hide_index=True)
+
+        latest_failure_tail = _latest_failed_log_tail(history_rows)
+        if latest_failure_tail:
+            with st.expander("Latest failed run log tail", expanded=False):
+                st.code(latest_failure_tail, language="text")

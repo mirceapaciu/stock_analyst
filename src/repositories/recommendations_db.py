@@ -1228,6 +1228,47 @@ class RecommendationsDatabase:
         
         return [dict(row) for row in results]
 
+    def find_stock_by_name(self, stock_name: str, limit: int = 10) -> List[Dict]:
+        """Find stock records by company name using exact and fuzzy matching.
+
+        Args:
+            stock_name: Company name to search for
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching stock records ordered by simple relevance
+        """
+        normalized = " ".join(str(stock_name or "").split())
+        if not normalized:
+            return []
+
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        like_value = f"%{normalized}%"
+        cursor.execute(
+            """
+            SELECT *
+            FROM stock
+            WHERE stock_name IS NOT NULL
+              AND TRIM(stock_name) <> ''
+              AND (
+                    LOWER(stock_name) = LOWER(?)
+                 OR LOWER(stock_name) LIKE LOWER(?)
+              )
+            ORDER BY
+                CASE WHEN LOWER(stock_name) = LOWER(?) THEN 0 ELSE 1 END,
+                LENGTH(stock_name) ASC
+            LIMIT ?
+            """,
+            (normalized, like_value, normalized, max(1, int(limit or 10))),
+        )
+
+        results = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in results]
+
     def has_recommended_stock(self, stock_id: int) -> bool:
         """Return True when a stock already exists in recommended_stock."""
         conn = self._get_connection()

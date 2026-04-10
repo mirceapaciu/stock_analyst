@@ -9,7 +9,12 @@ src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from config import MAX_RESULT_AGE_DAYS, TRACKED_RESULT_AGE_DAYS
-from recommendations.workflow import search_node, get_tracked_batch_query_specs, filter_known_bad_node
+from recommendations.workflow import (
+    search_node,
+    get_tracked_batch_query_specs,
+    filter_known_bad_node,
+    has_stock_name_recommendation_evidence,
+)
 
 
 class DummyUsageDatabase:
@@ -255,3 +260,29 @@ class TestSearchNodeModes:
 
         assert len(result["filtered_search_results"]) == 1
         assert result["filtered_search_results"][0]["href"].endswith("/company/jana-partners-llc/")
+
+    def test_has_stock_name_recommendation_evidence_detects_name_only_stock_articles(self):
+        result = {
+            "title": "Meta: Muse Models May Just Be the Spark That the Firm Needed in AI Model Development",
+            "href": "https://global.morningstar.com/en-eu/stocks/meta-muse-models-may-just-be-spark",
+            "body": "We think Meta stock is moderately undervalued.",
+            "pagemap": {
+                "metatags": [
+                    {
+                        "og:description": "We think Meta stock is moderately undervalued.",
+                    }
+                ]
+            },
+        }
+
+        assert has_stock_name_recommendation_evidence(result) is True
+
+    def test_has_stock_name_recommendation_evidence_rejects_generic_news(self):
+        result = {
+            "title": "Global Markets Open Mixed Amid Macro Uncertainty",
+            "href": "https://www.example.com/news/global-markets-open-mixed",
+            "body": "Macro developments and rate expectations moved broad indexes.",
+            "pagemap": {},
+        }
+
+        assert has_stock_name_recommendation_evidence(result) is False

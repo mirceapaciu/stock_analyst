@@ -36,6 +36,7 @@ from config import (
     BROWSER_FETCH_TIMEOUT_SECONDS,
     build_tracked_query,
 )
+from services.recommendations import infer_ticker_from_stock_name
 from repositories.recommendations_db import RecommendationsDatabase
 from recommendations.prompts import (
     get_extract_stocks_prompt,
@@ -294,6 +295,70 @@ def has_ticker_like_evidence(title: str, snippet: str) -> bool:
         r"\b[A-Z]{1,6}(?:\.[A-Z]{1,4})?\s+stock\b",
     ]
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def has_stock_name_recommendation_evidence(result: Dict) -> bool:
+    """Detect recommendation-like content that references stock/company name without ticker symbols."""
+    import re
+
+    title = str(result.get("title") or "")
+    body = str(result.get("body") or "")
+    pagemap = result.get("pagemap") or {}
+    metatags = pagemap.get("metatags") or []
+    news_articles = pagemap.get("newsarticle") or []
+
+    extra_parts = []
+    if metatags:
+        meta = metatags[0] or {}
+        extra_parts.extend(
+            [
+                str(meta.get("og:title") or ""),
+                str(meta.get("og:description") or ""),
+                str(meta.get("parsely-title") or ""),
+            ]
+        )
+    if news_articles:
+        article = news_articles[0] or {}
+        extra_parts.extend(
+            [
+                str(article.get("name") or ""),
+                str(article.get("description") or ""),
+                str(article.get("headline") or ""),
+            ]
+        )
+
+    combined = " ".join([title, body, *extra_parts]).lower()
+    recommendation_terms = (
+        "undervalued",
+        "fair value",
+        "top picks",
+        "analyst picks",
+        "rating",
+        "price target",
+        "stocks to buy",
+        "stock is",
+        "we think",
+    )
+
+    has_recommendation_language = any(term in combined for term in recommendation_terms)
+    if not has_recommendation_language:
+        return False
+
+    # Company-style mention patterns, e.g. "Meta: ..." or "Meta stock ..."
+    company_like_patterns = [
+        r"\b[A-Z][A-Za-z0-9&\.-]{1,40}\s+stock\b",
+        r"^[A-Z][A-Za-z0-9&\.'\-\s]{2,60}:",
+    ]
+    title_has_company_pattern = any(
+        re.search(pattern, title, re.IGNORECASE)
+        for pattern in company_like_patterns
+    )
+
+    # Heuristic: article URL path already under /stocks/ tends to be relevant.
+    href = str(result.get("href") or "").lower()
+    path_suggests_stock_article = "/stocks/" in href
+
+    return title_has_company_pattern or path_suggests_stock_article
 
 
 def _get_discovery_intent_phrase_for_query(query: str) -> str:
@@ -791,8 +856,11 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
             updated["excerpt_date"] = existing_date or None
             return updated
 
-        # In discovery mode, require ticker-like evidence in title/snippet before LLM call.
-        if workflow_mode == "discovery" and not has_ticker_like_evidence(title, body):
+        # In discovery mode, require either ticker-like evidence or strong stock-name evidence.
+        if workflow_mode == "discovery" and not (
+            has_ticker_like_evidence(title, body)
+            or has_stock_name_recommendation_evidence(r)
+        ):
             updated = dict(r)
             updated["contains_stocks"] = False
             updated["excerpt_date"] = existing_date or None
@@ -1416,6 +1484,14 @@ def validate_ticker_in_text(ticker: str, text: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
+def validate_stock_name_in_text(stock_name: str, text: str) -> bool:
+    """Verify that the stock/company name appears in the text (case-insensitive)."""
+    normalized_name = " ".join(str(stock_name or "").split())
+    if len(normalized_name) < 3:
+        return False
+    return normalized_name.lower() in str(text or "").lower()
+
+
 def extract_explicit_rating_from_text(text: str) -> Optional[int]:
     """Extract explicit star or text rating from source text when present."""
     import re
@@ -1482,6 +1558,7 @@ def extract_stock_recommendations_with_llm(
     extraction_metrics = {
         'hallucinated_tickers': 0,
         'low_quality_filtered': 0,
+        'inferred_tickers': 0,
     }
 
     if tracked_tickers:
@@ -1507,10 +1584,35 @@ def extract_stock_recommendations_with_llm(
     
     recommendations = []
     for ticker_obj in llm_response.tickers:
-        if not ticker_obj.ticker or ticker_obj.ticker == 'N/A':
-            continue
+        inferred_ticker_info = None
+        normalized_ticker = str(ticker_obj.ticker or '').strip().upper()
+        if not normalized_ticker or normalized_ticker == 'N/A':
+            inferred_ticker_info = infer_ticker_from_stock_name(
+                ticker_obj.stock_name,
+                exchange=ticker_obj.exchange,
+                currency=ticker_obj.currency,
+            )
 
-        if validate_ticker_in_text(ticker_obj.ticker, page_text):
+            if not inferred_ticker_info:
+                extraction_metrics['hallucinated_tickers'] += 1
+                logger.warning(
+                    f"Could not infer ticker for stock_name '{ticker_obj.stock_name}' from {url}; skipping"
+                )
+                continue
+
+            ticker_obj.ticker = inferred_ticker_info['ticker']
+            normalized_ticker = str(ticker_obj.ticker or '').strip().upper()
+            if not ticker_obj.exchange or ticker_obj.exchange == 'N/A':
+                ticker_obj.exchange = inferred_ticker_info.get('exchange', ticker_obj.exchange)
+            if not ticker_obj.stock_name or ticker_obj.stock_name == 'N/A':
+                ticker_obj.stock_name = inferred_ticker_info.get('stock_name', ticker_obj.stock_name)
+            extraction_metrics['inferred_tickers'] += 1
+
+        reference_text = f"{title}\n{page_text}"
+        ticker_present = validate_ticker_in_text(normalized_ticker, reference_text)
+        stock_name_present = validate_stock_name_in_text(ticker_obj.stock_name, reference_text)
+
+        if ticker_present or stock_name_present:
             explicit_rating = extract_explicit_rating_from_text(f"{title}\n{page_text}")
             if explicit_rating is not None:
                 ticker_obj.rating = explicit_rating
@@ -1526,7 +1628,7 @@ def extract_stock_recommendations_with_llm(
                 continue
             
             recommendation = {
-                'ticker': ticker_obj.ticker,
+                'ticker': normalized_ticker,
                 'exchange': (ticker_obj.exchange or 'N/A').strip() or 'N/A',
                 'currency': ticker_obj.currency,
                 'stock_name': ticker_obj.stock_name,
@@ -1544,10 +1646,16 @@ def extract_stock_recommendations_with_llm(
                 'quality_reasoning_level': ticker_obj.quality.reasoning_detail_level
             }
 
+            if inferred_ticker_info:
+                recommendation['ticker_inference_method'] = inferred_ticker_info.get('method', 'name_inference')
+                recommendation['ticker_inference_confidence'] = inferred_ticker_info.get('confidence', 0.0)
+
             recommendations.append(recommendation)
         else:
             extraction_metrics['hallucinated_tickers'] += 1
-            logger.warning(f"Hallucinated ticker {ticker_obj.ticker} not found in text, skipping")
+            logger.warning(
+                f"Hallucinated/unsupported recommendation ({normalized_ticker}) not grounded in page text by ticker or stock_name, skipping"
+            )
 
     if return_metrics:
         return recommendations, extraction_metrics
@@ -1918,6 +2026,8 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
         status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
     if extraction_metrics.get('hallucinated_tickers', 0) > 0:
         status_msg += f", {extraction_metrics['hallucinated_tickers']} hallucinated skipped"
+    if extraction_metrics.get('inferred_tickers', 0) > 0:
+        status_msg += f", {extraction_metrics['inferred_tickers']} ticker inferred by stock name"
     
     return {
         **state,

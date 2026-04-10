@@ -49,6 +49,47 @@ logger = logging.getLogger(__name__)
 LOW_QUALITY_RECOMMENDATION_THRESHOLD = 40
 TERMINAL_HTTP_STATUS_CODES = {401, 403, 404, 410}
 
+DISCOVERY_INTENT_PHRASES = (
+    "undervalued stocks",
+    "best value stocks",
+    "stocks to buy",
+)
+DISCOVERY_QUERY_OR_TERMS = '"buy rating" "top picks" "analyst picks" "price target" "stock recommendations"'
+DISCOVERY_QUERY_EXCLUDE_TERMS = 'video podcast transcript "company profile"'
+DISCOVERY_MIN_INTENT_SCORE = 2
+
+DISCOVERY_POSITIVE_TERMS = (
+    "undervalued stocks",
+    "best value stocks",
+    "stocks to buy",
+    "buy rating",
+    "top picks",
+    "analyst picks",
+    "price target",
+    "recommendation",
+    "recommended stocks",
+    "value stock",
+)
+
+DISCOVERY_NEGATIVE_TERMS = (
+    "company profile",
+    "market talk",
+    "video",
+    "podcast",
+    "transcript",
+    "live blog",
+    "stock quote",
+)
+
+DISCOVERY_DOMAIN_PATH_DENYLIST = {
+    "reuters.com": (
+        "/company/",
+        "/video/",
+        "/graphics/",
+        "/pictures/",
+    ),
+}
+
 
 @dataclass
 class TerminalFetchFailure(Exception):
@@ -202,6 +243,46 @@ def is_obvious_non_stock_url(url: str) -> bool:
     return False
 
 
+def is_obvious_non_recommendation_link(url: str, link_text: str = "") -> bool:
+    """Return True when URL or anchor text clearly points to legal/privacy/support content."""
+    parsed = urlparse(str(url or ""))
+    path = (parsed.path or "").lower()
+    text = str(link_text or "").strip().lower()
+
+    blocked_path_fragments = (
+        "/privacy-policy",
+        "/do-not-sell",
+        "/cookie-policy",
+        "/cookies",
+        "/terms-of-use",
+        "/terms-and-conditions",
+        "/legal",
+        "/contact-us",
+        "/help",
+        "/support",
+    )
+
+    blocked_text_fragments = (
+        "privacy policy",
+        "do not sell or share",
+        "your privacy choices",
+        "cookie policy",
+        "terms of use",
+        "terms and conditions",
+        "contact us",
+        "help center",
+        "support",
+    )
+
+    if any(fragment in path for fragment in blocked_path_fragments):
+        return True
+
+    if any(fragment in text for fragment in blocked_text_fragments):
+        return True
+
+    return False
+
+
 def has_ticker_like_evidence(title: str, snippet: str) -> bool:
     """Detect ticker-like evidence from title/snippet text."""
     import re
@@ -213,6 +294,63 @@ def has_ticker_like_evidence(title: str, snippet: str) -> bool:
         r"\b[A-Z]{1,6}(?:\.[A-Z]{1,4})?\s+stock\b",
     ]
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _get_discovery_intent_phrase_for_query(query: str) -> str:
+    normalized = str(query or "").lower()
+    for phrase in DISCOVERY_INTENT_PHRASES:
+        if phrase in normalized:
+            return phrase
+    return ""
+
+
+def get_discovery_cse_constraints(query: str) -> Dict[str, str]:
+    """Return additional CSE constraints to improve recommendation intent precision."""
+    constraints: Dict[str, str] = {
+        "orTerms": DISCOVERY_QUERY_OR_TERMS,
+        "excludeTerms": DISCOVERY_QUERY_EXCLUDE_TERMS,
+    }
+    intent_phrase = _get_discovery_intent_phrase_for_query(query)
+    if intent_phrase:
+        constraints["exactTerms"] = intent_phrase
+    return constraints
+
+
+def _domain_matches(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def is_discovery_noise_url(url: str) -> bool:
+    """Return True when URL path is known to be low-signal for recommendation intents."""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.netloc or "").lower().replace("www.", "")
+        path = (parsed.path or "").lower()
+
+        for domain, denied_prefixes in DISCOVERY_DOMAIN_PATH_DENYLIST.items():
+            if _domain_matches(host, domain) and any(path.startswith(prefix) for prefix in denied_prefixes):
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
+def score_discovery_recommendation_intent(result: Dict) -> int:
+    """Heuristic score for recommendation intent based on title/snippet evidence."""
+    title = str(result.get("title") or "")
+    snippet = str(result.get("body") or "")
+    combined = f"{title} {snippet}".lower()
+
+    score = 0
+    score += sum(3 for phrase in DISCOVERY_INTENT_PHRASES if phrase in combined)
+    score += min(4, sum(1 for term in DISCOVERY_POSITIVE_TERMS if term in combined))
+    score -= min(4, sum(2 for term in DISCOVERY_NEGATIVE_TERMS if term in combined))
+
+    if has_ticker_like_evidence(title, snippet):
+        score += 1
+
+    return score
 
 
 def update_progress_if_available(state: WorkflowState, progress: int):
@@ -456,12 +594,14 @@ def search_node(state: WorkflowState) -> WorkflowState:
                 executed_queries.append(query)
                 try:
                     discovery_calls_made += 1
+                    discovery_constraints = get_discovery_cse_constraints(query)
                     result = service.cse().list(
                         q=query,
                         cx=GOOGLE_CSE_ID,
                         num=min(MAX_SEARCH_RESULTS, 10),
                         dateRestrict=date_restrict,
-                        sort='date'
+                        sort='date',
+                        **discovery_constraints,
                     ).execute()
 
                     if 'items' in result:
@@ -583,7 +723,11 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
     filtered = []
     bad_removed = 0
     blocked_removed = 0
+    intent_removed = 0
     fetch_metrics = merge_count_maps(state.get('fetch_metrics'))
+    workflow_mode = str(state.get("workflow_mode") or "discovery").strip().lower()
+    if workflow_mode not in {"discovery", "tracked"}:
+        workflow_mode = "discovery"
     
     for result in search_results:
         url = result.get('href', '')
@@ -595,7 +739,20 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
                 blocked_removed += 1
                 fetch_metrics = merge_count_maps(fetch_metrics, {'blocked_cached_skips': 1})
             elif not is_unusable:
-                filtered.append(result)
+                if workflow_mode == "discovery":
+                    if is_discovery_noise_url(url):
+                        intent_removed += 1
+                        continue
+
+                    intent_score = score_discovery_recommendation_intent(result)
+                    if intent_score < DISCOVERY_MIN_INTENT_SCORE:
+                        intent_removed += 1
+                        continue
+
+                    enriched_result = {**result, "discovery_intent_score": intent_score}
+                    filtered.append(enriched_result)
+                else:
+                    filtered.append(result)
             else:
                 bad_removed += 1
         except Exception:
@@ -605,7 +762,10 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
         **state,
         "filtered_search_results": filtered,
         "fetch_metrics": fetch_metrics,
-        "status": f"Removed {bad_removed} from unusable domains, {blocked_removed} from blocked URL rules, {len(filtered)} results remaining"
+        "status": (
+            f"Removed {bad_removed} from unusable domains, {blocked_removed} from blocked URL rules, "
+            f"{intent_removed} from low-intent discovery results, {len(filtered)} results remaining"
+        ),
     }
 
 
@@ -1593,6 +1753,9 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
                 
                 # Make relative URLs absolute
                 absolute_url = urljoin(parent_url, link_href)
+
+                if is_obvious_non_recommendation_link(absolute_url, link_text):
+                    continue
                 
                 # Skip if same domain and already in our results
                 if absolute_url == parent_url:

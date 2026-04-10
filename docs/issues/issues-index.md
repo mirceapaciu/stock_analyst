@@ -6,3 +6,4 @@
 | FEAT-004 | feature | high | resolved | Jobs dashboard | UI dashboard that shows when the jobs last ran |
 | FEAT-005 | feature | high | resolved | Job group lock | Recommendation discovery and tracked stock jobs should not run at the same time |
 | BUG-006 |	bug | high | resolved |	The recommendations do not contain saved PDF|  |
+| BUG-007 | bug | high | resolved | Search returns non-recommendation pages for stock-pick intents | Added discovery query constraints and low-intent filtering before analysis |

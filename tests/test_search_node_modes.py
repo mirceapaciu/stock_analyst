@@ -9,7 +9,7 @@ src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from config import MAX_RESULT_AGE_DAYS, TRACKED_RESULT_AGE_DAYS
-from recommendations.workflow import search_node, get_tracked_batch_query_specs
+from recommendations.workflow import search_node, get_tracked_batch_query_specs, filter_known_bad_node
 
 
 class DummyUsageDatabase:
@@ -26,9 +26,9 @@ class FakeCseClient:
         self.query_log = query_log
         self._last_query = ""
 
-    def list(self, q, cx, num, dateRestrict, sort):
+    def list(self, q, cx, num, dateRestrict, sort, **kwargs):
         self._last_query = q
-        self.query_log.append({"query": q, "dateRestrict": dateRestrict})
+        self.query_log.append({"query": q, "dateRestrict": dateRestrict, **kwargs})
         return self
 
     def execute(self):
@@ -64,10 +64,13 @@ class TestSearchNodeModes:
     def test_search_node_discovery_mode_uses_discovery_queries_only(self):
         query_log = []
         usage_db = DummyUsageDatabase()
-        discovery_queries = ["discovery-query-1", "discovery-query-2"]
+        discovery_queries = [
+            "undervalued stocks site:example.com",
+            "best value stocks site:example.com",
+        ]
 
         responses = {
-            "discovery-query-1": {
+            "undervalued stocks site:example.com": {
                 "items": [
                     {
                         "title": "Value pick 1",
@@ -76,7 +79,7 @@ class TestSearchNodeModes:
                     }
                 ]
             },
-            "discovery-query-2": {
+            "best value stocks site:example.com": {
                 "items": [
                     {
                         "title": "Value pick 2",
@@ -105,6 +108,9 @@ class TestSearchNodeModes:
 
         assert [entry["query"] for entry in query_log] == discovery_queries
         assert all(entry["dateRestrict"] == f"d{MAX_RESULT_AGE_DAYS}" for entry in query_log)
+        assert all(entry.get("orTerms") for entry in query_log)
+        assert all(entry.get("excludeTerms") for entry in query_log)
+        assert all(entry.get("exactTerms") for entry in query_log)
         assert usage_db.logged == [("discovery", 2)]
         assert result["executed_queries"] == discovery_queries
         assert len(result["search_results"]) == 2
@@ -181,3 +187,71 @@ class TestSearchNodeModes:
         assert len(specs) == 1
         assert "AAPL" in specs[0]["query"]
         assert '"Apple Inc"' in specs[0]["query"]
+
+    def test_filter_known_bad_discovery_mode_removes_low_intent_or_profile_urls(self):
+        class DummyFilterDatabase:
+            @staticmethod
+            def get_unusable_domains():
+                return []
+
+            @staticmethod
+            def get_blocked_url_match(_url):
+                return None
+
+        state = {
+            **self._base_state(),
+            "workflow_mode": "discovery",
+            "search_results": [
+                {
+                    "title": "Jana Partners LLC | Reuters",
+                    "href": "https://www.reuters.com/company/jana-partners-llc/",
+                    "body": "Stocks · U.S. Markets · Wealth",
+                    "date": None,
+                    "pagemap": {},
+                },
+                {
+                    "title": "10 Undervalued Stocks to Buy in 2026",
+                    "href": "https://www.reuters.com/markets/stocks/undervalued-stocks-to-buy-2026-04-01/",
+                    "body": "Top picks with buy rating and price target updates",
+                    "date": "2026-04-01",
+                    "pagemap": {},
+                },
+            ],
+        }
+
+        with patch("recommendations.workflow.RecommendationsDatabase", return_value=DummyFilterDatabase()):
+            result = filter_known_bad_node(state)
+
+        assert len(result["filtered_search_results"]) == 1
+        assert result["filtered_search_results"][0]["href"].endswith("/undervalued-stocks-to-buy-2026-04-01/")
+        assert result["filtered_search_results"][0].get("discovery_intent_score", 0) >= 2
+
+    def test_filter_known_bad_tracked_mode_does_not_apply_discovery_intent_filter(self):
+        class DummyFilterDatabase:
+            @staticmethod
+            def get_unusable_domains():
+                return []
+
+            @staticmethod
+            def get_blocked_url_match(_url):
+                return None
+
+        state = {
+            **self._base_state(),
+            "workflow_mode": "tracked",
+            "search_results": [
+                {
+                    "title": "Jana Partners LLC | Reuters",
+                    "href": "https://www.reuters.com/company/jana-partners-llc/",
+                    "body": "Stocks · U.S. Markets · Wealth",
+                    "date": None,
+                    "pagemap": {},
+                }
+            ],
+        }
+
+        with patch("recommendations.workflow.RecommendationsDatabase", return_value=DummyFilterDatabase()):
+            result = filter_known_bad_node(state)
+
+        assert len(result["filtered_search_results"]) == 1
+        assert result["filtered_search_results"][0]["href"].endswith("/company/jana-partners-llc/")

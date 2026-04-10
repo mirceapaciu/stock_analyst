@@ -36,6 +36,7 @@ from config import (
     BROWSER_FETCH_TIMEOUT_SECONDS,
     build_tracked_query,
 )
+from services.recommendations import infer_ticker_from_stock_name
 from repositories.recommendations_db import RecommendationsDatabase
 from recommendations.prompts import (
     get_extract_stocks_prompt,
@@ -48,6 +49,47 @@ logger = logging.getLogger(__name__)
 
 LOW_QUALITY_RECOMMENDATION_THRESHOLD = 40
 TERMINAL_HTTP_STATUS_CODES = {401, 403, 404, 410}
+
+DISCOVERY_INTENT_PHRASES = (
+    "undervalued stocks",
+    "best value stocks",
+    "stocks to buy",
+)
+DISCOVERY_QUERY_OR_TERMS = '"buy rating" "top picks" "analyst picks" "price target" "stock recommendations"'
+DISCOVERY_QUERY_EXCLUDE_TERMS = 'video podcast transcript "company profile"'
+DISCOVERY_MIN_INTENT_SCORE = 2
+
+DISCOVERY_POSITIVE_TERMS = (
+    "undervalued stocks",
+    "best value stocks",
+    "stocks to buy",
+    "buy rating",
+    "top picks",
+    "analyst picks",
+    "price target",
+    "recommendation",
+    "recommended stocks",
+    "value stock",
+)
+
+DISCOVERY_NEGATIVE_TERMS = (
+    "company profile",
+    "market talk",
+    "video",
+    "podcast",
+    "transcript",
+    "live blog",
+    "stock quote",
+)
+
+DISCOVERY_DOMAIN_PATH_DENYLIST = {
+    "reuters.com": (
+        "/company/",
+        "/video/",
+        "/graphics/",
+        "/pictures/",
+    ),
+}
 
 
 @dataclass
@@ -202,6 +244,46 @@ def is_obvious_non_stock_url(url: str) -> bool:
     return False
 
 
+def is_obvious_non_recommendation_link(url: str, link_text: str = "") -> bool:
+    """Return True when URL or anchor text clearly points to legal/privacy/support content."""
+    parsed = urlparse(str(url or ""))
+    path = (parsed.path or "").lower()
+    text = str(link_text or "").strip().lower()
+
+    blocked_path_fragments = (
+        "/privacy-policy",
+        "/do-not-sell",
+        "/cookie-policy",
+        "/cookies",
+        "/terms-of-use",
+        "/terms-and-conditions",
+        "/legal",
+        "/contact-us",
+        "/help",
+        "/support",
+    )
+
+    blocked_text_fragments = (
+        "privacy policy",
+        "do not sell or share",
+        "your privacy choices",
+        "cookie policy",
+        "terms of use",
+        "terms and conditions",
+        "contact us",
+        "help center",
+        "support",
+    )
+
+    if any(fragment in path for fragment in blocked_path_fragments):
+        return True
+
+    if any(fragment in text for fragment in blocked_text_fragments):
+        return True
+
+    return False
+
+
 def has_ticker_like_evidence(title: str, snippet: str) -> bool:
     """Detect ticker-like evidence from title/snippet text."""
     import re
@@ -213,6 +295,127 @@ def has_ticker_like_evidence(title: str, snippet: str) -> bool:
         r"\b[A-Z]{1,6}(?:\.[A-Z]{1,4})?\s+stock\b",
     ]
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def has_stock_name_recommendation_evidence(result: Dict) -> bool:
+    """Detect recommendation-like content that references stock/company name without ticker symbols."""
+    import re
+
+    title = str(result.get("title") or "")
+    body = str(result.get("body") or "")
+    pagemap = result.get("pagemap") or {}
+    metatags = pagemap.get("metatags") or []
+    news_articles = pagemap.get("newsarticle") or []
+
+    extra_parts = []
+    if metatags:
+        meta = metatags[0] or {}
+        extra_parts.extend(
+            [
+                str(meta.get("og:title") or ""),
+                str(meta.get("og:description") or ""),
+                str(meta.get("parsely-title") or ""),
+            ]
+        )
+    if news_articles:
+        article = news_articles[0] or {}
+        extra_parts.extend(
+            [
+                str(article.get("name") or ""),
+                str(article.get("description") or ""),
+                str(article.get("headline") or ""),
+            ]
+        )
+
+    combined = " ".join([title, body, *extra_parts]).lower()
+    recommendation_terms = (
+        "undervalued",
+        "fair value",
+        "top picks",
+        "analyst picks",
+        "rating",
+        "price target",
+        "stocks to buy",
+        "stock is",
+        "we think",
+    )
+
+    has_recommendation_language = any(term in combined for term in recommendation_terms)
+    if not has_recommendation_language:
+        return False
+
+    # Company-style mention patterns, e.g. "Meta: ..." or "Meta stock ..."
+    company_like_patterns = [
+        r"\b[A-Z][A-Za-z0-9&\.-]{1,40}\s+stock\b",
+        r"^[A-Z][A-Za-z0-9&\.'\-\s]{2,60}:",
+    ]
+    title_has_company_pattern = any(
+        re.search(pattern, title, re.IGNORECASE)
+        for pattern in company_like_patterns
+    )
+
+    # Heuristic: article URL path already under /stocks/ tends to be relevant.
+    href = str(result.get("href") or "").lower()
+    path_suggests_stock_article = "/stocks/" in href
+
+    return title_has_company_pattern or path_suggests_stock_article
+
+
+def _get_discovery_intent_phrase_for_query(query: str) -> str:
+    normalized = str(query or "").lower()
+    for phrase in DISCOVERY_INTENT_PHRASES:
+        if phrase in normalized:
+            return phrase
+    return ""
+
+
+def get_discovery_cse_constraints(query: str) -> Dict[str, str]:
+    """Return additional CSE constraints to improve recommendation intent precision."""
+    constraints: Dict[str, str] = {
+        "orTerms": DISCOVERY_QUERY_OR_TERMS,
+        "excludeTerms": DISCOVERY_QUERY_EXCLUDE_TERMS,
+    }
+    intent_phrase = _get_discovery_intent_phrase_for_query(query)
+    if intent_phrase:
+        constraints["exactTerms"] = intent_phrase
+    return constraints
+
+
+def _domain_matches(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def is_discovery_noise_url(url: str) -> bool:
+    """Return True when URL path is known to be low-signal for recommendation intents."""
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.netloc or "").lower().replace("www.", "")
+        path = (parsed.path or "").lower()
+
+        for domain, denied_prefixes in DISCOVERY_DOMAIN_PATH_DENYLIST.items():
+            if _domain_matches(host, domain) and any(path.startswith(prefix) for prefix in denied_prefixes):
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
+def score_discovery_recommendation_intent(result: Dict) -> int:
+    """Heuristic score for recommendation intent based on title/snippet evidence."""
+    title = str(result.get("title") or "")
+    snippet = str(result.get("body") or "")
+    combined = f"{title} {snippet}".lower()
+
+    score = 0
+    score += sum(3 for phrase in DISCOVERY_INTENT_PHRASES if phrase in combined)
+    score += min(4, sum(1 for term in DISCOVERY_POSITIVE_TERMS if term in combined))
+    score -= min(4, sum(2 for term in DISCOVERY_NEGATIVE_TERMS if term in combined))
+
+    if has_ticker_like_evidence(title, snippet):
+        score += 1
+
+    return score
 
 
 def update_progress_if_available(state: WorkflowState, progress: int):
@@ -456,12 +659,14 @@ def search_node(state: WorkflowState) -> WorkflowState:
                 executed_queries.append(query)
                 try:
                     discovery_calls_made += 1
+                    discovery_constraints = get_discovery_cse_constraints(query)
                     result = service.cse().list(
                         q=query,
                         cx=GOOGLE_CSE_ID,
                         num=min(MAX_SEARCH_RESULTS, 10),
                         dateRestrict=date_restrict,
-                        sort='date'
+                        sort='date',
+                        **discovery_constraints,
                     ).execute()
 
                     if 'items' in result:
@@ -583,7 +788,11 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
     filtered = []
     bad_removed = 0
     blocked_removed = 0
+    intent_removed = 0
     fetch_metrics = merge_count_maps(state.get('fetch_metrics'))
+    workflow_mode = str(state.get("workflow_mode") or "discovery").strip().lower()
+    if workflow_mode not in {"discovery", "tracked"}:
+        workflow_mode = "discovery"
     
     for result in search_results:
         url = result.get('href', '')
@@ -595,7 +804,20 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
                 blocked_removed += 1
                 fetch_metrics = merge_count_maps(fetch_metrics, {'blocked_cached_skips': 1})
             elif not is_unusable:
-                filtered.append(result)
+                if workflow_mode == "discovery":
+                    if is_discovery_noise_url(url):
+                        intent_removed += 1
+                        continue
+
+                    intent_score = score_discovery_recommendation_intent(result)
+                    if intent_score < DISCOVERY_MIN_INTENT_SCORE:
+                        intent_removed += 1
+                        continue
+
+                    enriched_result = {**result, "discovery_intent_score": intent_score}
+                    filtered.append(enriched_result)
+                else:
+                    filtered.append(result)
             else:
                 bad_removed += 1
         except Exception:
@@ -605,7 +827,10 @@ def filter_known_bad_node(state: WorkflowState) -> WorkflowState:
         **state,
         "filtered_search_results": filtered,
         "fetch_metrics": fetch_metrics,
-        "status": f"Removed {bad_removed} from unusable domains, {blocked_removed} from blocked URL rules, {len(filtered)} results remaining"
+        "status": (
+            f"Removed {bad_removed} from unusable domains, {blocked_removed} from blocked URL rules, "
+            f"{intent_removed} from low-intent discovery results, {len(filtered)} results remaining"
+        ),
     }
 
 
@@ -631,8 +856,11 @@ def analyze_search_result(state: WorkflowState) -> WorkflowState:
             updated["excerpt_date"] = existing_date or None
             return updated
 
-        # In discovery mode, require ticker-like evidence in title/snippet before LLM call.
-        if workflow_mode == "discovery" and not has_ticker_like_evidence(title, body):
+        # In discovery mode, require either ticker-like evidence or strong stock-name evidence.
+        if workflow_mode == "discovery" and not (
+            has_ticker_like_evidence(title, body)
+            or has_stock_name_recommendation_evidence(r)
+        ):
             updated = dict(r)
             updated["contains_stocks"] = False
             updated["excerpt_date"] = existing_date or None
@@ -1256,6 +1484,14 @@ def validate_ticker_in_text(ticker: str, text: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
+def validate_stock_name_in_text(stock_name: str, text: str) -> bool:
+    """Verify that the stock/company name appears in the text (case-insensitive)."""
+    normalized_name = " ".join(str(stock_name or "").split())
+    if len(normalized_name) < 3:
+        return False
+    return normalized_name.lower() in str(text or "").lower()
+
+
 def extract_explicit_rating_from_text(text: str) -> Optional[int]:
     """Extract explicit star or text rating from source text when present."""
     import re
@@ -1322,6 +1558,7 @@ def extract_stock_recommendations_with_llm(
     extraction_metrics = {
         'hallucinated_tickers': 0,
         'low_quality_filtered': 0,
+        'inferred_tickers': 0,
     }
 
     if tracked_tickers:
@@ -1347,10 +1584,35 @@ def extract_stock_recommendations_with_llm(
     
     recommendations = []
     for ticker_obj in llm_response.tickers:
-        if not ticker_obj.ticker or ticker_obj.ticker == 'N/A':
-            continue
+        inferred_ticker_info = None
+        normalized_ticker = str(ticker_obj.ticker or '').strip().upper()
+        if not normalized_ticker or normalized_ticker == 'N/A':
+            inferred_ticker_info = infer_ticker_from_stock_name(
+                ticker_obj.stock_name,
+                exchange=ticker_obj.exchange,
+                currency=ticker_obj.currency,
+            )
 
-        if validate_ticker_in_text(ticker_obj.ticker, page_text):
+            if not inferred_ticker_info:
+                extraction_metrics['hallucinated_tickers'] += 1
+                logger.warning(
+                    f"Could not infer ticker for stock_name '{ticker_obj.stock_name}' from {url}; skipping"
+                )
+                continue
+
+            ticker_obj.ticker = inferred_ticker_info['ticker']
+            normalized_ticker = str(ticker_obj.ticker or '').strip().upper()
+            if not ticker_obj.exchange or ticker_obj.exchange == 'N/A':
+                ticker_obj.exchange = inferred_ticker_info.get('exchange', ticker_obj.exchange)
+            if not ticker_obj.stock_name or ticker_obj.stock_name == 'N/A':
+                ticker_obj.stock_name = inferred_ticker_info.get('stock_name', ticker_obj.stock_name)
+            extraction_metrics['inferred_tickers'] += 1
+
+        reference_text = f"{title}\n{page_text}"
+        ticker_present = validate_ticker_in_text(normalized_ticker, reference_text)
+        stock_name_present = validate_stock_name_in_text(ticker_obj.stock_name, reference_text)
+
+        if ticker_present or stock_name_present:
             explicit_rating = extract_explicit_rating_from_text(f"{title}\n{page_text}")
             if explicit_rating is not None:
                 ticker_obj.rating = explicit_rating
@@ -1366,7 +1628,7 @@ def extract_stock_recommendations_with_llm(
                 continue
             
             recommendation = {
-                'ticker': ticker_obj.ticker,
+                'ticker': normalized_ticker,
                 'exchange': (ticker_obj.exchange or 'N/A').strip() or 'N/A',
                 'currency': ticker_obj.currency,
                 'stock_name': ticker_obj.stock_name,
@@ -1384,10 +1646,16 @@ def extract_stock_recommendations_with_llm(
                 'quality_reasoning_level': ticker_obj.quality.reasoning_detail_level
             }
 
+            if inferred_ticker_info:
+                recommendation['ticker_inference_method'] = inferred_ticker_info.get('method', 'name_inference')
+                recommendation['ticker_inference_confidence'] = inferred_ticker_info.get('confidence', 0.0)
+
             recommendations.append(recommendation)
         else:
             extraction_metrics['hallucinated_tickers'] += 1
-            logger.warning(f"Hallucinated ticker {ticker_obj.ticker} not found in text, skipping")
+            logger.warning(
+                f"Hallucinated/unsupported recommendation ({normalized_ticker}) not grounded in page text by ticker or stock_name, skipping"
+            )
 
     if return_metrics:
         return recommendations, extraction_metrics
@@ -1469,6 +1737,23 @@ def scrape_single_page(search_result: Dict, headers: Dict, db: RecommendationsDa
             tracked_tickers=tracked_tickers,
             return_metrics=True,
         )
+
+        # Keep lightweight HTTP fetch by default, but ensure recommendation pages
+        # still get a PDF artifact for downstream UI links and auditing.
+        if not pdf_bytes and stock_recommendations:
+            try:
+                _, _, _, fallback_pdf_bytes = fetch_webpage_content(
+                    url,
+                    headers,
+                    use_browser=True,
+                )
+                if fallback_pdf_bytes:
+                    pdf_bytes = fallback_pdf_bytes
+                    logger.info(f"Captured fallback PDF for recommendation page: {url}")
+            except Exception as fallback_error:
+                logger.warning(
+                    f"Failed fallback PDF capture for recommendation page {url}: {fallback_error}"
+                )
 
         result = {
             'url': url,
@@ -1576,6 +1861,9 @@ def retrieve_nested_pages(state: WorkflowState) -> WorkflowState:
                 
                 # Make relative URLs absolute
                 absolute_url = urljoin(parent_url, link_href)
+
+                if is_obvious_non_recommendation_link(absolute_url, link_text):
+                    continue
                 
                 # Skip if same domain and already in our results
                 if absolute_url == parent_url:
@@ -1738,6 +2026,8 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
         status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
     if extraction_metrics.get('hallucinated_tickers', 0) > 0:
         status_msg += f", {extraction_metrics['hallucinated_tickers']} hallucinated skipped"
+    if extraction_metrics.get('inferred_tickers', 0) > 0:
+        status_msg += f", {extraction_metrics['inferred_tickers']} ticker inferred by stock name"
     
     return {
         **state,

@@ -473,6 +473,87 @@ def lookup_stock(ticker: str, exchange: str = None, stock_name: str = None, db_p
             logger.error(f"Error fetching from FMP API for {ticker}: {e}")
             raise Exception(f"Error fetching from FMP API: {e}")
 
+
+def infer_ticker_from_stock_name(
+    stock_name: str,
+    exchange: str = None,
+    currency: str = None,
+    db_path: str = RECOMMENDATIONS_DB_PATH,
+) -> Optional[Dict]:
+    """Infer ticker metadata from stock/company name.
+
+    Strategy:
+    1) Deterministic DB stock_name matching
+    2) FMP name-search fallback when DB match is weak/missing
+    """
+    normalized_name = " ".join(str(stock_name or "").split())
+    if not normalized_name or len(normalized_name) < 3:
+        return None
+
+    exchange_hint = str(exchange or "").strip().upper()
+    currency_hint = str(currency or "").strip().upper()
+
+    with RecommendationsDatabase(db_path) as db:
+        db_candidates = db.find_stock_by_name(normalized_name, limit=12)
+        best_db = _select_best_match(db_candidates, normalized_name) if db_candidates else None
+        if best_db:
+            similarity = _name_similarity(normalized_name, best_db.get("stock_name", ""))
+            if similarity >= 0.82:
+                confidence = min(0.99, max(0.6, similarity))
+                if exchange_hint and exchange_hint == str(best_db.get("exchange", "")).strip().upper():
+                    confidence = min(0.99, confidence + 0.05)
+
+                return {
+                    "ticker": str(best_db.get("ticker") or "").strip().upper(),
+                    "exchange": str(best_db.get("exchange") or "").strip() or "N/A",
+                    "stock_name": str(best_db.get("stock_name") or normalized_name).strip(),
+                    "confidence": round(confidence, 3),
+                    "method": "db_stock_name_match",
+                }
+
+    if not FMP_API_KEY:
+        return None
+
+    try:
+        fmp = FMPClient()
+        candidates = fmp.search_name(normalized_name)
+    except Exception as e:
+        logger.warning(f"FMP name inference failed for '{normalized_name}': {e}")
+        return None
+
+    best_candidate = None
+    best_score = 0.0
+    for candidate in candidates or []:
+        symbol = str(candidate.get("symbol") or "").strip().upper()
+        candidate_name = str(candidate.get("name") or "").strip()
+        candidate_exchange = str(candidate.get("exchange") or "").strip()
+        candidate_currency = str(candidate.get("currency") or "").strip().upper()
+        if not symbol or not candidate_name:
+            continue
+
+        score = _name_similarity(normalized_name, candidate_name)
+        if exchange_hint and exchange_hint == candidate_exchange.upper():
+            score += 0.05
+        if currency_hint and currency_hint == candidate_currency:
+            score += 0.03
+
+        if score > best_score:
+            best_score = score
+            best_candidate = {
+                "ticker": symbol,
+                "exchange": candidate_exchange or "N/A",
+                "stock_name": candidate_name,
+            }
+
+    if best_candidate and best_score >= 0.85:
+        return {
+            **best_candidate,
+            "confidence": round(min(0.99, best_score), 3),
+            "method": "fmp_search_name",
+        }
+
+    return None
+
 def get_recommendation_summary() -> Dict:
     """Get summary statistics for recommendations.
     

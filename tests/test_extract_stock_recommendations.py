@@ -272,6 +272,65 @@ class TestExtractStockRecommendations:
         assert recommendations[0]["ticker"] == "AMD"
         assert metrics["hallucinated_tickers"] == 1
         assert metrics["low_quality_filtered"] == 1
+
+    def test_infers_ticker_from_stock_name_when_ticker_missing(self):
+        url = "https://global.morningstar.com/en-eu/stocks/meta-note"
+        title = "Meta: Muse Models May Just Be the Spark"
+        page_text = (
+            "We think Meta stock is moderately undervalued. "
+            "Morningstar Rating : ★★★★ with fair value estimate updates."
+        )
+        page_date = datetime.strptime("2026-04-09", "%Y-%m-%d")
+
+        mock_response = StockRecommendationsResponse(
+            analysis_date="2026-04-09",
+            tickers=[
+                StockRecommendation(
+                    ticker="N/A",
+                    exchange="N/A",
+                    stock_name="Meta",
+                    rating=4,
+                    fair_price=850,
+                    recommendation_text="Meta stock remains moderately undervalued.",
+                    quality=RecommendationQuality(
+                        description_word_count=160,
+                        has_explicit_rating=True,
+                        reasoning_detail_level=3,
+                    ),
+                )
+            ],
+        )
+
+        with patch('recommendations.workflow.ChatOpenAI') as mock_openai, patch(
+            'recommendations.workflow.infer_ticker_from_stock_name',
+            return_value={
+                'ticker': 'META',
+                'exchange': 'NASDAQ',
+                'stock_name': 'Meta Platforms, Inc.',
+                'confidence': 0.93,
+                'method': 'db_stock_name_match',
+            },
+        ):
+            mock_llm = Mock()
+            mock_structured_llm = Mock()
+            mock_structured_llm.invoke.return_value = mock_response
+            mock_llm.with_structured_output.return_value = mock_structured_llm
+            mock_openai.return_value = mock_llm
+
+            recommendations, metrics = extract_stock_recommendations_with_llm(
+                url,
+                title,
+                page_text,
+                page_date,
+                return_metrics=True,
+            )
+
+        assert len(recommendations) == 1
+        assert recommendations[0]["ticker"] == "META"
+        assert recommendations[0]["ticker_inference_method"] == "db_stock_name_match"
+        assert recommendations[0]["ticker_inference_confidence"] == 0.93
+        assert metrics["inferred_tickers"] == 1
+        assert metrics["hallucinated_tickers"] == 0
     
     def test_quality_score_calculation(self, morningstar_amd_article_data, mock_llm_response_amd_article):
         """Test that quality score is calculated correctly from LLM components."""

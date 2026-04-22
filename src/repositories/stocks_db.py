@@ -22,7 +22,7 @@ from config import DB_PATH
 class StockRepository:
     """Repository for stock financial data database operations using DuckDB."""
     
-    db_is_initialized = False  # Class variable to track if DB has been initialized
+    initialized_db_paths = set()  # Track schema initialization per DB file path
 
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
@@ -43,10 +43,20 @@ class StockRepository:
     
     def _ensure_tables_exist(self):
         """Ensure all required tables exist in the database."""
-        if StockRepository.db_is_initialized:
+        from pathlib import Path
+
+        # Normalize path so each distinct DB file is initialized independently.
+        normalized_db_path = str(Path(self.db_path).resolve())
+        self.db_path = normalized_db_path
+
+        if normalized_db_path in StockRepository.initialized_db_paths:
             return
 
         try:
+            # Ensure parent directory exists before opening/creating the DB file.
+            db_path = Path(self.db_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
             conn = self._get_connection()
             cursor = conn.cursor()
             
@@ -61,16 +71,6 @@ class StockRepository:
             
             # Only create tables if they don't all exist
             if result[0] < 6:  # We expect 6 tables
-                from pathlib import Path
-                
-                # Ensure we're using an absolute path
-                db_path = Path(self.db_path).resolve()
-                self.db_path = str(db_path)
-                
-                # Ensure parent directory exists
-                db_dir = db_path.parent
-                db_dir.mkdir(parents=True, exist_ok=True)
-                
                 # Import and run table creation
                 from repositories.create_stocks_db import create_stocks_db
                 # Create tables if they don't exist (won't drop existing data)
@@ -79,11 +79,11 @@ class StockRepository:
                 logger.info(f"Database tables created/verified at {self.db_path}")
             else:
                 logger.debug(f"All required tables already exist in database")
+
+            StockRepository.initialized_db_paths.add(normalized_db_path)
                 
         except Exception as e:
             logger.warning(f"Could not ensure tables exist: {e}")
-        finally:
-            StockRepository.db_is_initialized = True
     
     def _get_connection(self) -> duckdb.DuckDBPyConnection:
         """Get or create database connection."""
@@ -318,6 +318,10 @@ class StockRepository:
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
+
+            minority_interest_note = info.get('minorityInterestNote')
+            if isinstance(minority_interest_note, str) and minority_interest_note.strip() == "":
+                minority_interest_note = None
             
             # Check if stock exists
             stock_id = self.get_stock_id(ticker)
@@ -352,7 +356,7 @@ class StockRepository:
                     info.get('payoutRatio'),
                     info.get('minorityInterest'),
                     info.get('minorityInterestSource'),
-                    info.get('minorityInterestNote'),
+                    minority_interest_note,
                     datetime.now().isoformat()
                 ))
                 stock_id = cursor.fetchone()[0]
@@ -398,7 +402,7 @@ class StockRepository:
                     info.get('payoutRatio'),
                     info.get('minorityInterest'),
                     info.get('minorityInterestSource'),
-                    info.get('minorityInterestNote'),
+                    minority_interest_note,
                     datetime.now().isoformat(),
                     ticker
                 ))

@@ -113,6 +113,7 @@ with st.sidebar:
             
             success_count = 0
             failed_count = 0
+            skipped_count = 0
             failed_stocks = []
             
             with RecommendationsDatabase(RECOMMENDATIONS_DB_PATH) as db:
@@ -125,6 +126,10 @@ with st.sidebar:
                     
                     try:
                         result = get_dcf_valuation(ticker=ticker)
+                        if result.get('dcf_guardrail_triggered') and result.get('dcf_guardrail_mode') == 'exclude':
+                            skipped_count += 1
+                            failed_stocks.append(f"{ticker} (guardrail excluded: {result.get('dcf_guardrail_reason')})")
+                            continue
                         fair_value_per_share = result.get('fair_value_per_share')
                         
                         if fair_value_per_share is not None:
@@ -153,6 +158,9 @@ with st.sidebar:
                 st.toast(f"⚠️ Failed to valuate {failed_count} stock(s)", icon="⚠️")
                 # Store failed stocks in session state to display after rerun
                 st.session_state['valuation_failures'] = failed_stocks
+
+            if skipped_count > 0:
+                st.toast(f"ℹ️ Skipped {skipped_count} stock(s) due to DCF guardrail", icon="ℹ️")
             
             st.rerun()
 

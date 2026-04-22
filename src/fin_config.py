@@ -1,6 +1,7 @@
 """
 Financial Configuration Constants for DCF Valuation
 """
+import os
 
 # Risk-Free Rate (10-year Treasury)
 RISK_FREE_RATE = 0.045  # 4.5%
@@ -108,3 +109,22 @@ RISK_SCORE_WEIGHTS = {
 
 RISK_DCF_DISCOUNT_GRID = [0.07, 0.09, 0.11, 0.13]
 RISK_DCF_TERMINAL_GROWTH_GRID = [0.01, 0.02, 0.03, 0.04]
+
+
+def _split_csv_env(value: str) -> list[str]:
+	return [item.strip().lower() for item in value.split(',') if item.strip()]
+
+
+# Sector suitability guardrail for enterprise-style FCF DCF.
+# `exclude`: suppress valuation output from recommendation usage.
+# `warn`: keep valuation but downgrade recommendation confidence/strength.
+_default_guardrail_mode = os.getenv("DCF_GUARDRAIL_MODE", "exclude").strip().lower()
+DCF_GUARDRAIL_MODE = _default_guardrail_mode if _default_guardrail_mode in {"exclude", "warn"} else "exclude"
+
+_default_guarded_sector_keywords = (
+	"financial services,financial,bank,banks,insurance,capital markets,"
+	"asset management,credit services,mortgage finance"
+)
+DCF_GUARDED_SECTOR_KEYWORDS = _split_csv_env(
+	os.getenv("DCF_GUARDED_SECTOR_KEYWORDS", _default_guarded_sector_keywords)
+)

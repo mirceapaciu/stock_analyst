@@ -607,6 +607,176 @@ class TestDcfParentOwnershipFcfAdjustment:
         assert result['original_consolidated_fcf'] == result['adjusted_parent_fcf']
 
 
+class TestDcfSectorGuardrail:
+    """Unit tests for financial-sector DCF guardrail policy (BUG-012)."""
+
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_financial_sector_exclude_mode_suppresses_valuation(
+        self,
+        mock_get_info,
+        mock_get_statements,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 120.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+            'sector': 'Financial Services',
+            'industry': 'Capital Markets',
+        }
+
+        result = do_dcf_valuation(
+            ticker='IBKR',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        assert result['dcf_guardrail_triggered'] is True
+        assert result['dcf_guardrail_mode'] == 'exclude'
+        assert result['fair_value_per_share'] is None
+        assert result['dcf_recommendation'] == 'HOLD'
+        assert result['dcf_recommendation_confidence'] == 0.0
+        assert 'Generic FCF-based DCF is guarded' in result['dcf_guardrail_reason']
+        mock_get_statements.assert_not_called()
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    @patch('services.valuation.DCF_GUARDRAIL_MODE', 'warn')
+    def test_financial_sector_warn_mode_keeps_valuation_but_downgrades_recommendation(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 100.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+            'sector': 'Financial Services',
+            'industry': 'Capital Markets',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        result = do_dcf_valuation(
+            ticker='IBKR',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=0.9,
+        )
+
+        assert result['dcf_guardrail_triggered'] is True
+        assert result['dcf_guardrail_mode'] == 'warn'
+        assert result['fair_value_per_share'] is not None
+        assert result['dcf_recommendation'] == 'HOLD'
+        assert result['dcf_recommendation_confidence'] == pytest.approx(0.35, rel=1e-6)
+        assert result['dcf_guardrail_warning'] is not None
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_non_financial_sector_not_guarded(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 100.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+            'sector': 'Technology',
+            'industry': 'Software - Infrastructure',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        result = do_dcf_valuation(
+            ticker='MSFT',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=0.9,
+        )
+
+        assert result['dcf_guardrail_triggered'] is False
+        assert result['fair_value_per_share'] is not None
+        assert result['dcf_recommendation_confidence'] == pytest.approx(1.0, rel=1e-6)
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_missing_sector_metadata_fallback_is_deterministic(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 100.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=0.9,
+        )
+
+        assert result['dcf_guardrail_triggered'] is False
+        assert result['dcf_guardrail_reason'] == 'No sector/industry metadata available; DCF guardrail not triggered.'
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v"])

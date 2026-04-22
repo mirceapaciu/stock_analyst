@@ -194,6 +194,16 @@ if submit:
                     discount_rate=discount_rate,
                     conservative_factor=conservative_factor
                 )
+
+                if result.get('dcf_guardrail_triggered'):
+                    mode = result.get('dcf_guardrail_mode')
+                    reason = result.get('dcf_guardrail_reason')
+                    warning = result.get('dcf_guardrail_warning')
+                    if mode == 'exclude':
+                        st.warning(f"⚠️ DCF guardrail triggered for {ticker}. Generic DCF valuation is excluded.\n\n{reason}")
+                        st.stop()
+                    if warning:
+                        st.warning(f"⚠️ {warning}\n\n{reason}")
                 
                 # Display key metrics
                 st.success(f"✅ Successfully calculated DCF valuation for {ticker}")
@@ -230,7 +240,7 @@ if submit:
                     )
                 
                 with col4:
-                    recommendation = recommendation = get_recomendation_from_upside_potential(result['conservative_upside_pct'])
+                    recommendation = result.get('dcf_recommendation') or get_recomendation_from_upside_potential(result['conservative_upside_pct'])
                     # Color-code recommendation
                     if recommendation == 'STRONG BUY':
                         st.success(f"**{recommendation}**")

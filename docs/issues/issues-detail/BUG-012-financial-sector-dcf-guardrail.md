@@ -74,3 +74,42 @@ Out of scope:
 - Sector labels from providers may be inconsistent or missing; fallback logic must be conservative and transparent.
 - Some diversified firms can be hard to classify; consider allowlist/override support.
 - Follow-up: evaluate sector-specific valuation alternatives for financial firms.
+
+## Resolution Summary
+
+### Root Cause
+- `do_dcf_valuation` applied a generic enterprise-style FCF DCF model uniformly, without checking whether ticker sector/industry was suitable for that model.
+- Recommendation output derived directly from DCF upside had no sector guardrail override path.
+
+### Fix Implemented
+- Added configurable DCF guardrail policy in `fin_config.py`:
+  - `DCF_GUARDRAIL_MODE` with supported values: `exclude` (default) or `warn`.
+  - `DCF_GUARDED_SECTOR_KEYWORDS` as configurable keyword list for sector/industry matching.
+- Added deterministic sector suitability evaluation in `services/valuation.py` using stock metadata (`sector`, `industry`).
+- Added structured diagnostics to valuation outputs:
+  - `dcf_guardrail_triggered`
+  - `dcf_guardrail_mode`
+  - `dcf_guardrail_reason`
+  - `dcf_guardrail_warning`
+  - `dcf_guardrail_matched_keyword`
+  - `dcf_guardrail_sector`
+  - `dcf_guardrail_industry`
+- Implemented policy behavior:
+  - `exclude`: suppresses valuation outputs (`fair_value_per_share` and related valuation fields become `None`) and emits explicit guardrail reason.
+  - `warn`: keeps valuation outputs but overrides recommendation to `HOLD` with reduced confidence.
+- Added recommendation diagnostics in valuation output:
+  - `dcf_recommendation`
+  - `dcf_recommendation_confidence`
+- Surfaced guardrail behavior in UI:
+  - DCF page shows guardrail warnings/reasons and stops excluded valuation display.
+  - Recommendations batch valuation treats excluded cases as skipped, with explicit reason.
+
+### Test Coverage Added
+- Financial-sector ticker in `exclude` mode: valuation suppressed + reason emitted.
+- Financial-sector ticker in `warn` mode: valuation retained + recommendation downgraded.
+- Non-financial ticker: no guardrail trigger.
+- Missing sector metadata: deterministic non-trigger fallback reason.
+
+### Remaining Risks / Follow-up
+- Provider sector/industry labels can vary; keyword policy may need periodic tuning.
+- Diversified firms may need explicit allowlist/override handling in future.

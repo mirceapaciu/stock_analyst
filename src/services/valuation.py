@@ -37,10 +37,72 @@ from fin_config import (
     DEFAULT_HISTORICAL_BASE_RATE,
     DEFAULT_HISTORICAL_YEARS,
     FCF_HISTORICAL_WINDOW,
+    DCF_GUARDRAIL_MODE,
+    DCF_GUARDED_SECTOR_KEYWORDS,
 )
 from services.financial import get_financial_statements, get_or_create_stock_info, get_historical_fcf
 from services.currency import get_financial_currency, convert_currency
 from repositories.stocks_db import StockRepository
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _evaluate_dcf_guardrail(info: Dict[str, Any]) -> Dict[str, Any]:
+    """Evaluate whether generic DCF should be guarded based on sector metadata."""
+    sector_raw = (info or {}).get('sector')
+    industry_raw = (info or {}).get('industry')
+    sector = _normalize_text(sector_raw)
+    industry = _normalize_text(industry_raw)
+
+    if not sector and not industry:
+        return {
+            'dcf_guardrail_triggered': False,
+            'dcf_guardrail_mode': DCF_GUARDRAIL_MODE,
+            'dcf_guardrail_reason': 'No sector/industry metadata available; DCF guardrail not triggered.',
+            'dcf_guardrail_warning': None,
+            'dcf_guardrail_matched_keyword': None,
+            'dcf_guardrail_sector': sector_raw,
+            'dcf_guardrail_industry': industry_raw,
+        }
+
+    haystack = f"{sector} {industry}".strip()
+    matched_keyword = next((kw for kw in DCF_GUARDED_SECTOR_KEYWORDS if kw and kw in haystack), None)
+    if matched_keyword:
+        reason = (
+            f"Generic FCF-based DCF is guarded for sector/industry metadata "
+            f"('{sector_raw}' / '{industry_raw}') matched by keyword '{matched_keyword}'."
+        )
+        warning = (
+            "Guardrail warning: generic enterprise-style DCF can be unreliable for financial-sector "
+            "business models; recommendation confidence is downgraded."
+            if DCF_GUARDRAIL_MODE == 'warn'
+            else None
+        )
+        return {
+            'dcf_guardrail_triggered': True,
+            'dcf_guardrail_mode': DCF_GUARDRAIL_MODE,
+            'dcf_guardrail_reason': reason,
+            'dcf_guardrail_warning': warning,
+            'dcf_guardrail_matched_keyword': matched_keyword,
+            'dcf_guardrail_sector': sector_raw,
+            'dcf_guardrail_industry': industry_raw,
+        }
+
+    return {
+        'dcf_guardrail_triggered': False,
+        'dcf_guardrail_mode': DCF_GUARDRAIL_MODE,
+        'dcf_guardrail_reason': (
+            f"Sector/industry metadata ('{sector_raw}' / '{industry_raw}') did not match any guardrail keywords."
+        ),
+        'dcf_guardrail_warning': None,
+        'dcf_guardrail_matched_keyword': None,
+        'dcf_guardrail_sector': sector_raw,
+        'dcf_guardrail_industry': industry_raw,
+    }
 
 
 def get_dcf_valuation(
@@ -131,6 +193,46 @@ def do_dcf_valuation(
     
     # Get stock data from financial service
     info = get_or_create_stock_info(ticker)
+    guardrail = _evaluate_dcf_guardrail(info)
+
+    if guardrail.get('dcf_guardrail_triggered') and guardrail.get('dcf_guardrail_mode') == 'exclude':
+        return {
+            'ticker': ticker,
+            # Input parameters (prefixed with in_) - actual values used
+            'in_forecast_years': forecast_years,
+            'in_terminal_growth_rate': terminal_growth_rate,
+            'in_discount_rate': discount_rate,
+            'in_fcf_growth_rates': fcf_growth_rates,
+            'in_conservative_factor': conservative_factor,
+            # Output results (suppressed by guardrail)
+            'current_price': info.get('currentPrice', 0),
+            'fair_value_per_share': None,
+            'conservative_fair_value': None,
+            'upside_potential_pct': None,
+            'conservative_upside_pct': None,
+            'current_fcf': None,
+            'terminal_value': None,
+            'total_enterprise_value': None,
+            'equity_value': None,
+            'shares_outstanding': info.get('sharesOutstanding', 0),
+            'projected_fcfs': [],
+            'pv_fcfs': [],
+            'pv_terminal_value': None,
+            'net_debt': None,
+            'minority_interest': None,
+            'minority_interest_source': None,
+            'minority_interest_note': None,
+            'parent_ownership_pct': None,
+            'parent_ownership_pct_source': None,
+            'parent_ownership_pct_note': None,
+            'original_consolidated_fcf': None,
+            'adjusted_parent_fcf': None,
+            'fcf_growth_notes': [],
+            'dcf_recommendation': 'HOLD',
+            'dcf_recommendation_confidence': 0.0,
+            **guardrail,
+        }
+
     statements = get_financial_statements(ticker, statement_type='cashflow')
     cash_flow = statements.get('cashflow')
     
@@ -224,6 +326,12 @@ def do_dcf_valuation(
     # Calculate additional metrics
     upside_potential = (fair_value_in_trading_currency - current_price) / current_price if current_price > 0 else 0
     conservative_upside = (conservative_fair_value_in_trading_currency - current_price) / current_price if current_price > 0 else 0
+
+    dcf_recommendation = get_recomendation_from_upside_potential(conservative_upside * 100)
+    dcf_recommendation_confidence = 1.0
+    if guardrail.get('dcf_guardrail_triggered') and guardrail.get('dcf_guardrail_mode') == 'warn':
+        dcf_recommendation = 'HOLD'
+        dcf_recommendation_confidence = 0.35
     
     return {
         'ticker': ticker,
@@ -256,7 +364,10 @@ def do_dcf_valuation(
         'parent_ownership_pct_note': parent_ownership_pct_note,
         'original_consolidated_fcf': original_consolidated_fcf,
         'adjusted_parent_fcf': current_fcf,
-        'fcf_growth_notes': fcf_growth_notes
+        'fcf_growth_notes': fcf_growth_notes,
+        'dcf_recommendation': dcf_recommendation,
+        'dcf_recommendation_confidence': dcf_recommendation_confidence,
+        **guardrail,
     }
 
 
@@ -968,6 +1079,19 @@ def print_dcf_analysis(valuation_result: Dict) -> None:
     print(f"\n{'='*60}")
     print(f"DCF VALUATION ANALYSIS: {result['ticker']}")
     print(f"{'='*60}")
+
+    if result.get('dcf_guardrail_triggered'):
+        print("\nDCF GUARDRAIL:")
+        print(f"Mode: {result.get('dcf_guardrail_mode')}")
+        print(f"Reason: {result.get('dcf_guardrail_reason')}")
+        if result.get('dcf_guardrail_warning'):
+            print(f"Warning: {result.get('dcf_guardrail_warning')}")
+
+        if result.get('dcf_guardrail_mode') == 'exclude':
+            print("\nVALUATION OUTPUT:")
+            print("Generic DCF valuation was suppressed by guardrail policy.")
+            print(f"\n{'='*60}")
+            return
     
     print(f"\nCURRENT MARKET DATA:")
     print(f"Current Price: {format_currency(result['current_price'], trading_currency, 2)}")
@@ -1017,11 +1141,12 @@ def print_dcf_analysis(valuation_result: Dict) -> None:
     print(f"Conservative Fair Value: {format_currency(result['conservative_fair_value'], trading_currency, 2)}")
     
     print(f"\nINVESTMENT RECOMMENDATION:")
-    recommendation = get_recomendation_from_upside_potential(result['upside_potential_pct'])
+    recommendation = result.get('dcf_recommendation') or get_recomendation_from_upside_potential(result['upside_potential_pct'])
     
     print(f"Upside Potential: {result['upside_potential_pct']:.1f}%")
     print(f"Conservative Upside: {result['conservative_upside_pct']:.1f}%")
     print(f"Recommendation: {recommendation}")
+    print(f"Recommendation Confidence: {result.get('dcf_recommendation_confidence', 1.0):.2f}")
     
     print(f"\n{'='*60}")
 

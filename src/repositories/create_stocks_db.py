@@ -41,6 +41,9 @@ def create_stock_table(conn: duckdb.DuckDBPyConnection, drop_if_exists: bool = F
         dividend_rate DOUBLE,
         dividend_yield DOUBLE,
         payout_ratio DOUBLE,
+        minority_interest DOUBLE,
+        minority_interest_source TEXT,
+        minority_interest_note TEXT,
         updated_at TEXT
     )
     """)
@@ -48,6 +51,25 @@ def create_stock_table(conn: duckdb.DuckDBPyConnection, drop_if_exists: bool = F
     # Add financial_currency column if it doesn't exist (for existing databases)
     try:
         cursor.execute("ALTER TABLE stock ADD COLUMN financial_currency TEXT")
+    except Exception:
+        # Column already exists, ignore
+        pass
+
+    # Add minority-interest columns for existing databases
+    try:
+        cursor.execute("ALTER TABLE stock ADD COLUMN minority_interest DOUBLE")
+    except Exception:
+        # Column already exists, ignore
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE stock ADD COLUMN minority_interest_source TEXT")
+    except Exception:
+        # Column already exists, ignore
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE stock ADD COLUMN minority_interest_note TEXT")
     except Exception:
         # Column already exists, ignore
         pass

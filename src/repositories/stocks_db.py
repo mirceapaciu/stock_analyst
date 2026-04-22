@@ -296,6 +296,9 @@ class StockRepository:
                 'dividendRate': db_data.get('dividend_rate'),
                 'dividendYield': db_data.get('dividend_yield'),
                 'payoutRatio': db_data.get('payout_ratio'),
+                'minorityInterest': db_data.get('minority_interest'),
+                'minorityInterestSource': db_data.get('minority_interest_source'),
+                'minorityInterestNote': db_data.get('minority_interest_note'),
             }
         
         except Exception:
@@ -326,8 +329,9 @@ class StockRepository:
                     ticker, short_name, long_name, sector, industry, 
                     country, currency, financial_currency, exchange, shares_outstanding, 
                     market_cap, current_price, beta, dividend_rate, 
-                    dividend_yield, payout_ratio, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                    dividend_yield, payout_ratio, minority_interest, minority_interest_source,
+                    minority_interest_note, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                 RETURNING id
                 """, (
                     ticker,
@@ -346,6 +350,9 @@ class StockRepository:
                     info.get('dividendRate'),
                     info.get('dividendYield'),
                     info.get('payoutRatio'),
+                    info.get('minorityInterest'),
+                    info.get('minorityInterestSource'),
+                    info.get('minorityInterestNote'),
                     datetime.now().isoformat()
                 ))
                 stock_id = cursor.fetchone()[0]
@@ -368,8 +375,11 @@ class StockRepository:
                     dividend_rate = $13,
                     dividend_yield = $14,
                     payout_ratio = $15,
-                    updated_at = $16
-                WHERE ticker = $17
+                    minority_interest = $16,
+                    minority_interest_source = $17,
+                    minority_interest_note = $18,
+                    updated_at = $19
+                WHERE ticker = $20
                 """, (
                     info.get('shortName'),
                     info.get('longName'),
@@ -386,6 +396,9 @@ class StockRepository:
                     info.get('dividendRate'),
                     info.get('dividendYield'),
                     info.get('payoutRatio'),
+                    info.get('minorityInterest'),
+                    info.get('minorityInterestSource'),
+                    info.get('minorityInterestNote'),
                     datetime.now().isoformat(),
                     ticker
                 ))
@@ -406,6 +419,40 @@ class StockRepository:
             info: Dictionary containing stock information from yfinance
         """
         self.upsert_stock(ticker, info)
+
+    def update_minority_interest(
+        self,
+        ticker: str,
+        minority_interest: float,
+        source: str,
+        note: Optional[str] = None,
+    ) -> None:
+        """Persist minority-interest valuation bridge fields at stock level."""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE stock
+                SET
+                    minority_interest = $1,
+                    minority_interest_source = $2,
+                    minority_interest_note = $3,
+                    updated_at = $4
+                WHERE ticker = $5
+                """,
+                (
+                    float(minority_interest),
+                    source,
+                    note,
+                    datetime.now().isoformat(),
+                    ticker,
+                ),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Database error updating minority interest: {e}")
+            raise e
     
     def save_dcf_valuation(self, stock_id: int, valuation_result: dict) -> None:
         """

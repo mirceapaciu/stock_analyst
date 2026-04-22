@@ -197,10 +197,7 @@ def do_dcf_valuation(
     
     # Adjust EV for net debt and minority interest to get parent common equity value
     net_debt = _get_net_debt(info)
-    minority_interest, minority_interest_source = _get_minority_interest(ticker, info)
-    minority_interest_note = ""
-    if minority_interest == 0:
-        minority_interest_note = "Minority interest data unavailable; adjustment assumed 0."
+    minority_interest, minority_interest_source, minority_interest_note = _get_minority_interest(ticker, info)
 
     equity_value = total_enterprise_value - net_debt - minority_interest
     
@@ -796,8 +793,40 @@ def _extract_latest_balance_value(balance: Optional[pd.DataFrame], labels: List[
     return None
 
 
-def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str]:
+def _persist_minority_interest(ticker: str, amount: float, source: str, note: str = "") -> None:
+    """Persist minority-interest stock-level properties for deterministic valuation reuse."""
+    try:
+        with StockRepository() as repo:
+            repo.update_minority_interest(
+                ticker=ticker,
+                minority_interest=amount,
+                source=source,
+                note=note or None,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to persist minority interest for {ticker}: {e}")
+
+
+def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str, str]:
     """Get minority interest amount used in the EV-to-equity bridge."""
+    persisted_source = info.get('minorityInterestSource')
+    persisted_note = info.get('minorityInterestNote')
+
+    if persisted_source not in (None, '') or persisted_note not in (None, ''):
+        persisted_value = info.get('minorityInterest')
+        try:
+            amount = float(persisted_value) if persisted_value is not None else 0.0
+        except (TypeError, ValueError):
+            amount = 0.0
+
+        source = persisted_source or 'unavailable'
+        note = persisted_note or (
+            "Minority interest data unavailable; adjustment assumed 0."
+            if amount == 0
+            else ""
+        )
+        return amount, source, note
+
     info_fields = [
         'minorityInterest',
         'minorityInterestNetOfTax',
@@ -814,7 +843,9 @@ def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str]:
         except (TypeError, ValueError):
             continue
         if numeric_value > 0:
-            return numeric_value, f"stock_info.{field}"
+            source = f"stock_info.{field}"
+            _persist_minority_interest(ticker, numeric_value, source, "")
+            return numeric_value, source, ""
 
     statements = get_financial_statements(ticker, statement_type='balance')
     balance = statements.get('balance')
@@ -830,7 +861,9 @@ def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str]:
         ]
     )
     if direct_balance_value is not None and direct_balance_value > 0:
-        return direct_balance_value, 'balance_sheet.minority_interest_row'
+        source = 'balance_sheet.minority_interest_row'
+        _persist_minority_interest(ticker, direct_balance_value, source, "")
+        return direct_balance_value, source, ""
 
     total_equity_gmi = _extract_latest_balance_value(balance, ['Total Equity Gross Minority Interest'])
     stockholders_equity = _extract_latest_balance_value(
@@ -840,9 +873,13 @@ def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str]:
     if total_equity_gmi is not None and stockholders_equity is not None:
         derived = total_equity_gmi - stockholders_equity
         if derived > 0:
-            return derived, 'balance_sheet.derived_total_equity_minus_stockholders_equity'
+            source = 'balance_sheet.derived_total_equity_minus_stockholders_equity'
+            _persist_minority_interest(ticker, derived, source, "")
+            return derived, source, ""
 
-    return 0.0, 'unavailable'
+    note = "Minority interest data unavailable; adjustment assumed 0."
+    _persist_minority_interest(ticker, 0.0, 'unavailable', note)
+    return 0.0, 'unavailable', note
 
 def get_recomendation_from_upside_potential(upside_potential_pct: float) -> str:
     """Get a recommendation based on the upside potential."""

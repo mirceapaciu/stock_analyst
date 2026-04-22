@@ -327,6 +327,7 @@ class TestCalculateHistoricalFcfGrowthRates:
 class TestDcfMinorityInterestAdjustment:
     """Unit tests for minority-interest handling in DCF equity bridge."""
 
+    @patch('services.valuation.StockRepository')
     @patch('services.valuation.get_financial_currency', return_value='USD')
     @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
     @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
@@ -343,6 +344,7 @@ class TestDcfMinorityInterestAdjustment:
         _mock_growth,
         _mock_convert,
         _mock_financial_currency,
+        mock_stock_repo,
     ):
         mock_get_info.return_value = {
             'sharesOutstanding': 100,
@@ -350,6 +352,7 @@ class TestDcfMinorityInterestAdjustment:
             'currency': 'USD',
             'financialCurrency': 'USD',
             'minorityInterest': 200.0,
+            'minorityInterestSource': 'stock_info.minorityInterest',
         }
         mock_get_statements.return_value = {
             'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
@@ -374,7 +377,9 @@ class TestDcfMinorityInterestAdjustment:
         assert result['minority_interest_source'] == 'stock_info.minorityInterest'
         assert result['minority_interest_note'] == ''
         assert result['fair_value_per_share'] == pytest.approx(122.0, rel=1e-6)
+        mock_stock_repo.assert_not_called()
 
+    @patch('services.valuation.StockRepository')
     @patch('services.valuation.get_financial_currency', return_value='USD')
     @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
     @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
@@ -391,7 +396,11 @@ class TestDcfMinorityInterestAdjustment:
         _mock_growth,
         _mock_convert,
         _mock_financial_currency,
+        mock_stock_repo,
     ):
+        mock_repo = MagicMock()
+        mock_stock_repo.return_value.__enter__.return_value = mock_repo
+
         mock_get_info.return_value = {
             'sharesOutstanding': 100,
             'currentPrice': 10.0,
@@ -426,6 +435,12 @@ class TestDcfMinorityInterestAdjustment:
         assert result['minority_interest_source'] == 'unavailable'
         assert 'assumed 0' in result['minority_interest_note']
         assert result['fair_value_per_share'] == pytest.approx(124.0, rel=1e-6)
+        mock_repo.update_minority_interest.assert_called_once_with(
+            ticker='TEST',
+            minority_interest=0.0,
+            source='unavailable',
+            note='Minority interest data unavailable; adjustment assumed 0.',
+        )
     
     def test_calculate_historical_fcf_growth_rates_missing_operating_cf(self):
         """Test when Operating Cash Flow is missing (should default to 0)."""

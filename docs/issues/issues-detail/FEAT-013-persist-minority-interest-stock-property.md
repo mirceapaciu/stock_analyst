@@ -3,7 +3,7 @@
 ## Metadata
 - Type: feature
 - Priority: medium
-- Status: new
+- Status: resolved
 - Area: financial data persistence and valuation diagnostics
 
 ## Problem Statement
@@ -73,3 +73,21 @@ Out of scope:
 - Field naming across data sources can vary; alias mapping may need expansion.
 - Potential staleness if persisted value is not refreshed with new filings.
 - Follow-up: define freshness policy tied to financial statement update cadence.
+
+## Root Cause
+- The stock-level DuckDB schema and repository mapping did not include dedicated minority-interest fields.
+- DCF valuation recomputed minority interest at runtime but had no persistence path for refreshed values and source metadata.
+
+## Resolution
+- Extended DuckDB stock schema with `minority_interest`, `minority_interest_source`, and `minority_interest_note`.
+- Added repository mapping so `get_stock_info`/`upsert_stock` read/write minority-interest fields.
+- Added `update_minority_interest` repository method for lightweight field refresh without full stock-info overwrite.
+- Updated valuation flow to:
+  - reuse persisted minority-interest values when source/note metadata is present,
+  - fallback to extraction (stock info or balance-sheet derived paths) when missing,
+  - persist fallback results for deterministic future reuse,
+  - preserve runtime diagnostics alignment with persisted values.
+
+## Validation Completed
+- Added repository-focused unit tests for stock-level minority-interest upsert/get and update flow.
+- Updated valuation tests to verify persisted-value reuse and fallback persistence when unavailable.

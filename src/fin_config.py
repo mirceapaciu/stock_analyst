@@ -110,6 +110,13 @@ RISK_SCORE_WEIGHTS = {
 RISK_DCF_DISCOUNT_GRID = [0.07, 0.09, 0.11, 0.13]
 RISK_DCF_TERMINAL_GROWTH_GRID = [0.01, 0.02, 0.03, 0.04]
 
+# DCF Outlier Detection Guardrails (BUG-010)
+# Detect implausible valuations driven by extreme growth assumptions
+MAX_FCF_CAGR = float(os.getenv("DCF_MAX_FCF_CAGR", "0.40"))  # Max 40% CAGR over forecast period
+MAX_TERMINAL_VALUE_RATIO = float(os.getenv("DCF_MAX_TERMINAL_VALUE_RATIO", "0.80"))  # Terminal value <= 80% of EV
+MAX_FAIR_VALUE_UPSIDE = float(os.getenv("DCF_MAX_FAIR_VALUE_UPSIDE", "5.0"))  # Max 500% upside
+MAX_FAIR_VALUE_TO_PRICE = float(os.getenv("DCF_MAX_FAIR_VALUE_TO_PRICE", "10.0"))  # Fair value <= 10x current price
+
 
 def _split_csv_env(value: str) -> list[str]:
 	return [item.strip().lower() for item in value.split(',') if item.strip()]

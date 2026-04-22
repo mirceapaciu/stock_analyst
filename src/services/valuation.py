@@ -39,10 +39,132 @@ from fin_config import (
     FCF_HISTORICAL_WINDOW,
     DCF_GUARDRAIL_MODE,
     DCF_GUARDED_SECTOR_KEYWORDS,
+    MAX_FCF_CAGR,
+    MAX_TERMINAL_VALUE_RATIO,
+    MAX_FAIR_VALUE_UPSIDE,
+    MAX_FAIR_VALUE_TO_PRICE,
 )
 from services.financial import get_financial_statements, get_or_create_stock_info, get_historical_fcf
 from services.currency import get_financial_currency, convert_currency
 from repositories.stocks_db import StockRepository
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _detect_dcf_outliers(
+    projected_fcfs: List[float],
+    fcf_growth_rates: List[float],
+    current_fcf: float,
+    total_enterprise_value: float,
+    pv_terminal_value: float,
+    pv_fcfs: List[float],
+    fair_value_per_share: float,
+    current_price: float,
+    discount_rate: float,
+) -> Dict[str, Any]:
+    """
+    Detect implausible valuations driven by extreme growth assumptions or outlier metrics.
+    
+    This function implements BUG-010 guardrails to catch valuations like IBKR where:
+    - Extreme FCF growth (81.5% CAGR) creates a runaway terminal value
+    - Terminal value dominates the valuation (88% of EV)
+    - Fair value implies extreme upside (11,124%)
+    
+    Returns:
+        Dict with keys:
+        - 'dcf_outlier_detected': bool - True if any outlier condition triggered
+        - 'dcf_outlier_reasons': List[str] - Explanation of which guardrails triggered
+        - 'dcf_outlier_diagnostics': Dict - Key metrics for transparency
+        - 'dcf_recommendation_confidence': float - Adjusted confidence (0.0-1.0)
+    """
+    outlier_detected = False
+    reasons = []
+    diagnostics = {}
+    
+    # Diagnostic 1: Check FCF CAGR (compound annual growth rate)
+    if len(projected_fcfs) >= 2 and current_fcf > 0:
+        fcf_cagr = (projected_fcfs[-1] / current_fcf) ** (1 / len(projected_fcfs)) - 1
+        diagnostics['fcf_cagr'] = fcf_cagr
+        if fcf_cagr > MAX_FCF_CAGR:
+            outlier_detected = True
+            reasons.append(
+                f"Extreme FCF growth: CAGR {fcf_cagr:.1%} exceeds threshold {MAX_FCF_CAGR:.1%}"
+            )
+    
+    # Diagnostic 2: Check terminal value contribution ratio
+    pv_fcf_total = sum(pv_fcfs) if pv_fcfs else 0
+    if total_enterprise_value > 0:
+        terminal_value_ratio = pv_terminal_value / total_enterprise_value
+        diagnostics['terminal_value_ratio'] = terminal_value_ratio
+        if terminal_value_ratio > MAX_TERMINAL_VALUE_RATIO:
+            outlier_detected = True
+            reasons.append(
+                f"Terminal value dominance: {terminal_value_ratio:.1%} exceeds threshold {MAX_TERMINAL_VALUE_RATIO:.1%} "
+                f"(indicates unstable long-term growth assumptions)"
+            )
+    
+    # Diagnostic 3: Check fair value upside potential
+    if current_price > 0:
+        upside_multiple = fair_value_per_share / current_price
+        diagnostics['fair_value_upside_multiple'] = upside_multiple
+        if upside_multiple > MAX_FAIR_VALUE_TO_PRICE:
+            outlier_detected = True
+            reasons.append(
+                f"Extreme upside: Fair value is {upside_multiple:.1f}x current price "
+                f"(exceeds threshold {MAX_FAIR_VALUE_TO_PRICE:.1f}x)"
+            )
+        
+        upside_pct = (upside_multiple - 1) * 100
+        diagnostics['upside_potential_pct'] = upside_pct
+        if upside_pct > MAX_FAIR_VALUE_UPSIDE * 100:
+            outlier_detected = True
+            reasons.append(
+                f"Extreme upside percentage: {upside_pct:.0f}% exceeds threshold {MAX_FAIR_VALUE_UPSIDE * 100:.0f}%"
+            )
+    
+    # Diagnostic 4: Check for extremely high growth rates in mid-period
+    # (High growth that doesn't decay suggests unrealistic assumptions)
+    if len(fcf_growth_rates) >= 3:
+        mid_period_growth_rates = fcf_growth_rates[1:-1]  # Exclude year 1 and last year
+        avg_mid_growth = np.mean(mid_period_growth_rates)
+        max_mid_growth = np.max(mid_period_growth_rates)
+        diagnostics['mid_period_avg_growth'] = avg_mid_growth
+        diagnostics['mid_period_max_growth'] = max_mid_growth
+        
+        # Flag if mid-period growth doesn't decline (suggests unrealistic constant high growth)
+        if all(g > 0.30 for g in mid_period_growth_rates):  # All years > 30% growth
+            outlier_detected = True
+            reasons.append(
+                f"Sustained extreme growth: All mid-period years have >30% growth "
+                f"(avg {avg_mid_growth:.1%}, max {max_mid_growth:.1%})"
+            )
+    
+    diagnostics['outlier_triggered'] = outlier_detected
+    diagnostics['outlier_reasons'] = reasons
+    
+    # Adjust confidence based on outlier severity
+    confidence = 1.0
+    if outlier_detected:
+        # Confidence drops significantly if any outlier detected
+        confidence = 0.25  # Very low confidence for outlier valuations
+    
+    logger.info(
+        f"DCF Outlier Check - Detected: {outlier_detected}, Reasons: {reasons}, "
+        f"Diagnostics: CAGR={diagnostics.get('fcf_cagr', 'N/A')}, "
+        f"Terminal Ratio={diagnostics.get('terminal_value_ratio', 'N/A')}, "
+        f"Upside={diagnostics.get('upside_potential_pct', 'N/A')}"
+    )
+    
+    return {
+        'dcf_outlier_detected': outlier_detected,
+        'dcf_outlier_reasons': reasons,
+        'dcf_outlier_diagnostics': diagnostics,
+        'dcf_recommendation_confidence': confidence,
+    }
 
 
 def _normalize_text(value: Any) -> str:
@@ -327,11 +449,34 @@ def do_dcf_valuation(
     upside_potential = (fair_value_in_trading_currency - current_price) / current_price if current_price > 0 else 0
     conservative_upside = (conservative_fair_value_in_trading_currency - current_price) / current_price if current_price > 0 else 0
 
+    # Step 6: Detect DCF outliers (BUG-010)
+    outlier_result = _detect_dcf_outliers(
+        projected_fcfs=projected_fcfs,
+        fcf_growth_rates=fcf_growth_rates,
+        current_fcf=current_fcf,
+        total_enterprise_value=total_enterprise_value,
+        pv_terminal_value=pv_terminal_value,
+        pv_fcfs=pv_fcfs,
+        fair_value_per_share=fair_value_per_share,
+        current_price=current_price,
+        discount_rate=discount_rate,
+    )
+
+    # Determine recommendation with outlier safety checks
     dcf_recommendation = get_recomendation_from_upside_potential(conservative_upside * 100)
     dcf_recommendation_confidence = 1.0
+    
     if guardrail.get('dcf_guardrail_triggered') and guardrail.get('dcf_guardrail_mode') == 'warn':
         dcf_recommendation = 'HOLD'
         dcf_recommendation_confidence = 0.35
+    
+    # Apply outlier detection downgrade
+    if outlier_result.get('dcf_outlier_detected'):
+        logger.warning(
+            f"{ticker}: DCF outlier detected. Reasons: {outlier_result.get('dcf_outlier_reasons')}"
+        )
+        dcf_recommendation = 'NEEDS_REVIEW'  # Downgrade to review status
+        dcf_recommendation_confidence = outlier_result.get('dcf_recommendation_confidence', 0.25)
     
     return {
         'ticker': ticker,
@@ -367,6 +512,10 @@ def do_dcf_valuation(
         'fcf_growth_notes': fcf_growth_notes,
         'dcf_recommendation': dcf_recommendation,
         'dcf_recommendation_confidence': dcf_recommendation_confidence,
+        # Outlier detection results (BUG-010)
+        'dcf_outlier_detected': outlier_result.get('dcf_outlier_detected', False),
+        'dcf_outlier_reasons': outlier_result.get('dcf_outlier_reasons', []),
+        'dcf_outlier_diagnostics': outlier_result.get('dcf_outlier_diagnostics', {}),
         **guardrail,
     }
 

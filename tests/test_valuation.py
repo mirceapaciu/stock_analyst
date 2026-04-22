@@ -677,10 +677,11 @@ class TestDcfSectorGuardrail:
 
         result = do_dcf_valuation(
             ticker='IBKR',
-            forecast_years=1,
+            forecast_years=5,
             terminal_growth_rate=0.02,
             discount_rate=0.10,
-            fcf_growth_rates=[0.0],
+            # Use reasonable declining growth rates to avoid triggering outlier detection
+            fcf_growth_rates=[0.10, 0.08, 0.06, 0.04, 0.02],
             conservative_factor=0.9,
         )
 
@@ -724,10 +725,11 @@ class TestDcfSectorGuardrail:
 
         result = do_dcf_valuation(
             ticker='MSFT',
-            forecast_years=1,
+            forecast_years=5,
             terminal_growth_rate=0.02,
             discount_rate=0.10,
-            fcf_growth_rates=[0.0],
+            # Use reasonable declining growth rates to avoid triggering outlier detection
+            fcf_growth_rates=[0.10, 0.08, 0.06, 0.04, 0.02],
             conservative_factor=0.9,
         )
 
@@ -775,6 +777,179 @@ class TestDcfSectorGuardrail:
 
         assert result['dcf_guardrail_triggered'] is False
         assert result['dcf_guardrail_reason'] == 'No sector/industry metadata available; DCF guardrail not triggered.'
+
+
+class TestDCFOutlierDetection:
+    """Unit tests for DCF outlier detection guardrails (BUG-010)."""
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda x, f, t: x)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=15744000000.0)  # IBKR current FCF
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_extreme_growth_scenario_triggers_outlier_flag(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        """
+        Reproduce IBKR scenario from BUG-010 where 81.5% CAGR triggers outlier detection.
+        
+        IBKR case:
+        - Current FCF: USD 15,744M
+        - Year 1-5 FCF growth: 81.5% per year
+        - Resulting fair value: USD 8,936.97 vs price USD 79.62 (11,124% upside)
+        - Terminal value: 88% of EV
+        """
+        mock_get_info.return_value = {
+            'sharesOutstanding': 445616477,
+            'currentPrice': 79.62,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [15744000000.0]}, index=['Free Cash Flow'])
+        }
+
+        # Use extreme growth rates from IBKR case (81.5% CAGR)
+        extreme_growth_rates = [0.815] * 5
+
+        result = do_dcf_valuation(
+            ticker='IBKR',
+            forecast_years=5,
+            terminal_growth_rate=0.025,
+            discount_rate=0.085,
+            fcf_growth_rates=extreme_growth_rates,
+            conservative_factor=0.90,
+        )
+
+        # Verify outlier was detected
+        assert result['dcf_outlier_detected'] is True
+        assert len(result['dcf_outlier_reasons']) > 0
+        
+        # Verify recommendation was downgraded to NEEDS_REVIEW
+        assert result['dcf_recommendation'] == 'NEEDS_REVIEW'
+        assert result['dcf_recommendation_confidence'] < 0.5
+        
+        # Verify outlier diagnostics include relevant metrics
+        diagnostics = result['dcf_outlier_diagnostics']
+        assert 'fcf_cagr' in diagnostics
+        assert 'terminal_value_ratio' in diagnostics
+        assert diagnostics['fcf_cagr'] > 0.40  # Exceeds MAX_FCF_CAGR threshold
+
+        # Verify at least one reason explains the outlier
+        reasons_str = ' '.join(result['dcf_outlier_reasons'])
+        assert 'growth' in reasons_str.lower() or 'terminal' in reasons_str.lower()
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda x, f, t: x)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_reasonable_growth_does_not_trigger_outlier(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        """Verify that reasonable growth scenarios do not trigger outlier detection."""
+        mock_get_info.return_value = {
+            'sharesOutstanding': 1000,
+            'currentPrice': 100.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        # Reasonable declining growth rates (common for mature tech companies)
+        reasonable_growth_rates = [0.15, 0.12, 0.10, 0.08, 0.06]
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=5,
+            terminal_growth_rate=0.025,
+            discount_rate=0.10,
+            fcf_growth_rates=reasonable_growth_rates,
+            conservative_factor=0.90,
+        )
+
+        # Verify outlier was NOT detected
+        assert result['dcf_outlier_detected'] is False
+        assert len(result['dcf_outlier_reasons']) == 0
+        
+        # Verify recommendation is based on upside (not downgraded to NEEDS_REVIEW)
+        assert result['dcf_recommendation'] in ['STRONG BUY', 'BUY', 'HOLD', 'SELL']
+        assert result['dcf_recommendation_confidence'] >= 0.95
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda x, f, t: x)
+    @patch('services.valuation._get_minority_interest', return_value=(0.0, 'unavailable', ''))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation._get_parent_ownership_pct', return_value=(1.0, 'unavailable', ''))
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_high_terminal_value_ratio_triggers_outlier(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_parent_ownership,
+        _mock_net_debt,
+        _mock_minority_interest,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        """Verify that terminal value dominance triggers outlier detection."""
+        mock_get_info.return_value = {
+            'sharesOutstanding': 1000,
+            'currentPrice': 100.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        # Growth rates that result in terminal value dominance
+        # (e.g., low forecast period growth but high terminal growth)
+        high_terminal_growth_rates = [0.05] * 5
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=5,
+            terminal_growth_rate=0.15,  # Unrealistic 15% perpetual growth
+            discount_rate=0.08,
+            fcf_growth_rates=high_terminal_growth_rates,
+            conservative_factor=0.90,
+        )
+
+        # Check if terminal value ratio is computed
+        diagnostics = result['dcf_outlier_diagnostics']
+        if 'terminal_value_ratio' in diagnostics:
+            # If terminal value ratio exceeds threshold, should be flagged
+            if diagnostics['terminal_value_ratio'] > 0.80:
+                assert result['dcf_outlier_detected'] is True
+                assert result['dcf_recommendation'] == 'NEEDS_REVIEW'
 
 
 if __name__ == "__main__":

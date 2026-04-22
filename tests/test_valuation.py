@@ -459,6 +459,154 @@ class TestDcfMinorityInterestAdjustment:
             assert result['historical_fcf'][0] == -20000000.0
 
 
+class TestDcfParentOwnershipFcfAdjustment:
+    """Unit tests for parent-ownership % FCF adjustment (BUG-014)."""
+
+    def _base_info(self):
+        return {
+            'sharesOutstanding': 100,
+            'currentPrice': 10.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+            'minorityInterest': 0.0,
+            'minorityInterestSource': 'stock_info.minorityInterest',
+            'minorityInterestNote': '',
+        }
+
+    def _make_statements_side_effect(self, balance_df):
+        cashflow_df = pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+
+        def _side_effect(_ticker, statement_type='cashflow'):
+            if statement_type == 'cashflow':
+                return {'cashflow': cashflow_df}
+            if statement_type == 'balance':
+                return {'balance': balance_df}
+            return {}
+
+        return _side_effect
+
+    @patch('services.valuation.StockRepository')
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_fcf_adjusted_for_26pct_parent_stake(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_net_debt,
+        _mock_growth,
+        _mock_convert,
+        _mock_financial_currency,
+        mock_stock_repo,
+    ):
+        """FCF is scaled to parent ownership % when minority interest is material."""
+        # IBKR-like: stockholders equity 5363, total equity (incl minority) 20472
+        balance_df = pd.DataFrame(
+            {'2024-12-31': [5363.0, 20472.0]},
+            index=['Stockholders Equity', 'Total Equity Gross Minority Interest'],
+        )
+        mock_get_info.return_value = self._base_info()
+        mock_get_statements.side_effect = self._make_statements_side_effect(balance_df)
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        expected_pct = 5363.0 / 20472.0
+        assert result['parent_ownership_pct'] == pytest.approx(expected_pct, rel=1e-4)
+        assert result['parent_ownership_pct_source'] == 'balance_sheet.stockholders_equity_div_total_equity_gmi'
+        assert result['original_consolidated_fcf'] == 1000.0
+        assert result['adjusted_parent_fcf'] == pytest.approx(1000.0 * expected_pct, rel=1e-4)
+        # Fair value must be materially lower than the unadjusted baseline (~125.0 with no adjustment)
+        assert result['fair_value_per_share'] < 50.0
+
+    @patch('services.valuation.StockRepository')
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_fcf_unchanged_when_ownership_data_unavailable(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_net_debt,
+        _mock_growth,
+        _mock_convert,
+        _mock_financial_currency,
+        mock_stock_repo,
+    ):
+        """FCF is unchanged and ownership defaults to 100% when balance sheet lacks required rows."""
+        # Balance sheet without 'Total Equity Gross Minority Interest'
+        balance_df = pd.DataFrame(
+            {'2024-12-31': [5000.0]},
+            index=['Total Equity'],
+        )
+        mock_get_info.return_value = self._base_info()
+        mock_get_statements.side_effect = self._make_statements_side_effect(balance_df)
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        assert result['parent_ownership_pct'] == 1.0
+        assert result['parent_ownership_pct_source'] == 'unavailable'
+        assert result['original_consolidated_fcf'] == 1000.0
+        assert result['adjusted_parent_fcf'] == 1000.0
+
+    @patch('services.valuation.StockRepository')
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
+    @patch('services.valuation._get_net_debt', return_value=0.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_fcf_unchanged_for_100pct_parent_ownership(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_net_debt,
+        _mock_growth,
+        _mock_convert,
+        _mock_financial_currency,
+        mock_stock_repo,
+    ):
+        """FCF is unchanged for companies with no minority interest (100% parent ownership)."""
+        balance_df = pd.DataFrame(
+            {'2024-12-31': [10000.0, 10000.0]},
+            index=['Stockholders Equity', 'Total Equity Gross Minority Interest'],
+        )
+        mock_get_info.return_value = self._base_info()
+        mock_get_statements.side_effect = self._make_statements_side_effect(balance_df)
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        assert result['parent_ownership_pct'] == pytest.approx(1.0, rel=1e-4)
+        assert result['adjusted_parent_fcf'] == pytest.approx(1000.0, rel=1e-4)
+        assert result['original_consolidated_fcf'] == result['adjusted_parent_fcf']
+
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v"])

@@ -152,7 +152,17 @@ def do_dcf_valuation(
     
     if current_fcf is None or shares_outstanding == 0:
         raise ValueError(f"Unable to retrieve required financial data for {ticker}")
-    
+
+    # Adjust FCF to reflect parent common shareholders' share (BUG-014)
+    original_consolidated_fcf = current_fcf
+    parent_ownership_pct, parent_ownership_pct_source, parent_ownership_pct_note = _get_parent_ownership_pct(ticker, info)
+    if parent_ownership_pct < 1.0:
+        current_fcf = current_fcf * parent_ownership_pct
+        logger.info(
+            f"{ticker}: Adjusted FCF from {original_consolidated_fcf:,.0f} to "
+            f"{current_fcf:,.0f} using parent ownership {parent_ownership_pct:.1%}"
+        )
+
     # Step 1: Estimate future free cash flows
     fcf_growth_notes = []
     if fcf_growth_rates is None:
@@ -241,6 +251,11 @@ def do_dcf_valuation(
         'minority_interest': minority_interest,
         'minority_interest_source': minority_interest_source,
         'minority_interest_note': minority_interest_note,
+        'parent_ownership_pct': parent_ownership_pct,
+        'parent_ownership_pct_source': parent_ownership_pct_source,
+        'parent_ownership_pct_note': parent_ownership_pct_note,
+        'original_consolidated_fcf': original_consolidated_fcf,
+        'adjusted_parent_fcf': current_fcf,
         'fcf_growth_notes': fcf_growth_notes
     }
 
@@ -807,6 +822,46 @@ def _persist_minority_interest(ticker: str, amount: float, source: str, note: st
         logger.warning(f"Failed to persist minority interest for {ticker}: {e}")
 
 
+def _get_parent_ownership_pct(ticker: str, info: Dict) -> Tuple[float, str, str]:
+    """Compute the parent common shareholders' ownership percentage.
+
+    Derived from the balance sheet as:
+        Stockholders Equity / Total Equity Gross Minority Interest
+
+    Returns:
+        Tuple of (ownership_pct, source, note).
+        Defaults to (1.0, 'unavailable', note_msg) when data is insufficient.
+    """
+    statements = get_financial_statements(ticker, statement_type='balance')
+    balance = statements.get('balance')
+
+    total_equity_gmi = _extract_latest_balance_value(
+        balance, ['Total Equity Gross Minority Interest']
+    )
+    stockholders_equity = _extract_latest_balance_value(
+        balance,
+        ['Stockholders Equity', 'Total Stockholder Equity'],
+    )
+
+    if (
+        total_equity_gmi is not None
+        and stockholders_equity is not None
+        and total_equity_gmi > 0
+    ):
+        pct = stockholders_equity / total_equity_gmi
+        pct = max(0.0, min(1.0, pct))
+        source = 'balance_sheet.stockholders_equity_div_total_equity_gmi'
+        note = (
+            f"Parent ownership {pct:.1%} = "
+            f"Stockholders Equity {stockholders_equity:,.0f} / "
+            f"Total Equity (incl. minority) {total_equity_gmi:,.0f}"
+        )
+        return pct, source, note
+
+    note = "Parent ownership % unavailable; using consolidated FCF without adjustment."
+    return 1.0, 'unavailable', note
+
+
 def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str, str]:
     """Get minority interest amount used in the EV-to-equity bridge."""
     persisted_source = info.get('minorityInterestSource')
@@ -920,7 +975,19 @@ def print_dcf_analysis(valuation_result: Dict) -> None:
     
     print(f"\nVALUATION INPUTS:")
     print(f"Forecast Years: {result['in_forecast_years']}")
-    print(f"Current FCF: {format_currency(result['current_fcf'], financial_currency, 0)}")
+    if result.get('parent_ownership_pct', 1.0) < 1.0:
+        print(f"Consolidated FCF: {format_currency(result['original_consolidated_fcf'], financial_currency, 0)}")
+        print(f"Parent Ownership %: {result['parent_ownership_pct']:.1%}")
+        if result.get('parent_ownership_pct_note'):
+            print(f"Parent Ownership Note: {result['parent_ownership_pct_note']}")
+        print(f"FCF used in DCF (parent-adjusted): {format_currency(result['adjusted_parent_fcf'], financial_currency, 0)}")
+    else:
+        print(f"Consolidated FCF: {format_currency(result['original_consolidated_fcf'], financial_currency, 0)}")
+        pct_note = result.get('parent_ownership_pct_note', '')
+        if pct_note and result.get('parent_ownership_pct_source') == 'unavailable':
+            print(f"Parent Ownership: 100% (assumed — {pct_note})")
+        else:
+            print(f"Parent Ownership %: {result.get('parent_ownership_pct', 1.0):.1%} (no minority interest adjustment)")
     print(f"Discount Rate (WACC): {result['in_discount_rate']:.1%}")
     print(f"Terminal Growth Rate: {result['in_terminal_growth_rate']:.1%}")
     print(f"Conservative Factor: {result['in_conservative_factor']:.1%}")

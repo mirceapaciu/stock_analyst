@@ -3,7 +3,7 @@
 ## Metadata
 - Type: bug
 - Priority: high
-- Status: new
+- Status: resolved
 - Area: financial analysis and DCF valuation
 
 ## Problem Statement
@@ -87,3 +87,21 @@ Out of scope:
 - Ownership % determination can be complex for multi-tier or complex capital structures.
 - Growth rate adjustment is optional and may require domain judgment; conservatively, only adjust FCF magnitude, not rates.
 - Follow-up: per-sector guidelines for capital-structure adjustments and minority-heavy entity handling.
+
+## Resolution
+
+### Root Cause
+`do_dcf_valuation` used consolidated FCF as the DCF input without scaling it to the parent's ownership share. The equity bridge (BUG-011) subtracted minority interest at the end, but the projected cash flows were still inflated by the minority-owned portion, overstating the terminal value and all projected FCFs.
+
+### Steps Taken
+1. Added `_get_parent_ownership_pct(ticker, info)` helper in `src/services/valuation.py`.
+   - Derives ownership % from balance sheet: `Stockholders Equity / Total Equity Gross Minority Interest`.
+   - Defaults to `(1.0, 'unavailable', note)` when the required rows are absent.
+2. In `do_dcf_valuation`, after extracting `current_fcf`, multiplies it by the ownership % when < 100%.
+3. Added five new fields to the return dict: `parent_ownership_pct`, `parent_ownership_pct_source`, `parent_ownership_pct_note`, `original_consolidated_fcf`, `adjusted_parent_fcf`.
+4. Updated `print_dcf_analysis` to display FCF adjustment diagnostics.
+5. Added `TestDcfParentOwnershipFcfAdjustment` unit test class (3 tests: 26% stake, unavailable data, 100% ownership).
+
+### Remaining Risks / Follow-up
+- Growth rate scaling (not just FCF magnitude) was intentionally left out per scope; may be revisited.
+- Multi-tier structures with layered minority interests are not handled by this change.

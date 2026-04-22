@@ -2,7 +2,7 @@
 
 ## Metadata
 - Type: feature
-- Priority: high
+- Priority: medium
 - Status: new
 - Area: recommendation workflow (pre-LLM candidate gating)
 

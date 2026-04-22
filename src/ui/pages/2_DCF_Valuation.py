@@ -408,7 +408,13 @@ if submit:
                         st.write(f"**PV of Projected FCF:** {financial_currency} {pv_projected_fcf:,.0f}")
                         st.write(f"**PV of Terminal Value:** {financial_currency} {result.get('pv_terminal_value', 0):,.0f}")
                         st.write(f"**Enterprise Value:** {financial_currency} {result.get('total_enterprise_value', 0):,.0f}")
+                        st.write(f"**Net Debt:** {financial_currency} {result.get('net_debt', 0):,.0f}")
+                        st.write(f"**Minority Interest Adjustment:** {financial_currency} {result.get('minority_interest', 0):,.0f}")
                         st.write(f"**Equity Value:** {financial_currency} {result.get('equity_value', 0):,.0f}")
+                        st.write(f"**Minority Interest Source:** {result.get('minority_interest_source', 'unavailable')}")
+                        minority_note = result.get('minority_interest_note')
+                        if minority_note:
+                            st.caption(minority_note)
                         st.write(f"**Shares Outstanding:** {result.get('shares_outstanding', 0):,.0f}")
                 
                 # Historical FCF Growth Analysis

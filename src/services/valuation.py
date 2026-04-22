@@ -195,9 +195,14 @@ def do_dcf_valuation(
     # Step 5: Calculate fair value per share
     total_enterprise_value = sum(pv_fcfs) + pv_terminal_value
     
-    # Adjust for net debt to get equity value
+    # Adjust EV for net debt and minority interest to get parent common equity value
     net_debt = _get_net_debt(info)
-    equity_value = total_enterprise_value - net_debt
+    minority_interest, minority_interest_source = _get_minority_interest(ticker, info)
+    minority_interest_note = ""
+    if minority_interest == 0:
+        minority_interest_note = "Minority interest data unavailable; adjustment assumed 0."
+
+    equity_value = total_enterprise_value - net_debt - minority_interest
     
     fair_value_per_share = equity_value / shares_outstanding
     conservative_fair_value = fair_value_per_share * conservative_factor
@@ -236,6 +241,9 @@ def do_dcf_valuation(
         'pv_fcfs': pv_fcfs,
         'pv_terminal_value': pv_terminal_value,
         'net_debt': net_debt,
+        'minority_interest': minority_interest,
+        'minority_interest_source': minority_interest_source,
+        'minority_interest_note': minority_interest_note,
         'fcf_growth_notes': fcf_growth_notes
     }
 
@@ -771,6 +779,71 @@ def _get_net_debt(info: Dict) -> float:
     
     return max(0, total_debt - total_cash)  # Net debt can't be negative for valuation
 
+
+def _extract_latest_balance_value(balance: Optional[pd.DataFrame], labels: List[str]) -> Optional[float]:
+    """Extract the latest available value from a balance sheet row label list."""
+    if balance is None or balance.empty:
+        return None
+
+    for label in labels:
+        if label in balance.index:
+            value = balance.loc[label].iloc[0]
+            if pd.notna(value):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def _get_minority_interest(ticker: str, info: Dict) -> Tuple[float, str]:
+    """Get minority interest amount used in the EV-to-equity bridge."""
+    info_fields = [
+        'minorityInterest',
+        'minorityInterestNetOfTax',
+        'nonControllingInterest',
+        'nonControllingInterests',
+    ]
+
+    for field in info_fields:
+        value = info.get(field)
+        if value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric_value > 0:
+            return numeric_value, f"stock_info.{field}"
+
+    statements = get_financial_statements(ticker, statement_type='balance')
+    balance = statements.get('balance')
+
+    direct_balance_value = _extract_latest_balance_value(
+        balance,
+        [
+            'Minority Interest',
+            'Minority Interests',
+            'Minority Interest Net Of Tax',
+            'Non Controlling Interest',
+            'Noncontrolling Interest',
+        ]
+    )
+    if direct_balance_value is not None and direct_balance_value > 0:
+        return direct_balance_value, 'balance_sheet.minority_interest_row'
+
+    total_equity_gmi = _extract_latest_balance_value(balance, ['Total Equity Gross Minority Interest'])
+    stockholders_equity = _extract_latest_balance_value(
+        balance,
+        ['Stockholders Equity', 'Total Stockholder Equity', 'Total Equity']
+    )
+    if total_equity_gmi is not None and stockholders_equity is not None:
+        derived = total_equity_gmi - stockholders_equity
+        if derived > 0:
+            return derived, 'balance_sheet.derived_total_equity_minus_stockholders_equity'
+
+    return 0.0, 'unavailable'
+
 def get_recomendation_from_upside_potential(upside_potential_pct: float) -> str:
     """Get a recommendation based on the upside potential."""
     if upside_potential_pct > 20:
@@ -815,6 +888,10 @@ def print_dcf_analysis(valuation_result: Dict) -> None:
     print(f"Terminal Growth Rate: {result['in_terminal_growth_rate']:.1%}")
     print(f"Conservative Factor: {result['in_conservative_factor']:.1%}")
     print(f"Net Debt: {format_currency(result['net_debt'], financial_currency, 0)}")
+    print(f"Minority Interest Adjustment: {format_currency(result.get('minority_interest', 0), financial_currency, 0)}")
+    print(f"Minority Interest Source: {result.get('minority_interest_source', 'unavailable')}")
+    if result.get('minority_interest_note'):
+        print(f"Minority Interest Note: {result['minority_interest_note']}")
     
     print(f"\nPROJECTED FREE CASH FLOWS:")
     projected_fcfs = result['projected_fcfs']

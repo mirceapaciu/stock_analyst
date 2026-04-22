@@ -11,7 +11,12 @@ from pathlib import Path
 # Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from services.valuation import get_dcf_valuation, print_dcf_analysis, calculate_historical_fcf_growth_rates
+from services.valuation import (
+    get_dcf_valuation,
+    do_dcf_valuation,
+    print_dcf_analysis,
+    calculate_historical_fcf_growth_rates,
+)
 
 
 @pytest.mark.integration
@@ -317,6 +322,110 @@ class TestCalculateHistoricalFcfGrowthRates:
             # The condition checks: fcf_values[-1] != 0 and fcf_values[0] > 0
             # Since fcf_values[-1] (oldest) is 0, CAGR should be 0
             assert result['cagr'] == 0
+
+
+class TestDcfMinorityInterestAdjustment:
+    """Unit tests for minority-interest handling in DCF equity bridge."""
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
+    @patch('services.valuation._get_net_debt', return_value=100.0)
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_minority_interest_from_info_reduces_fair_value(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_net_debt,
+        _mock_growth,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 10.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+            'minorityInterest': 200.0,
+        }
+        mock_get_statements.return_value = {
+            'cashflow': pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        }
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        # EV = PV(FCF year1) + PV(TV)
+        # PV(FCF) = 1000/1.1 = 909.09
+        # TV = (1000*1.02)/(0.10-0.02) = 12750; PV(TV)=12750/1.1=11590.91
+        # EV = 12500; Equity = EV - net_debt(100) - minority_interest(200) = 12200
+        assert result['total_enterprise_value'] == pytest.approx(12500.0, rel=1e-6)
+        assert result['equity_value'] == pytest.approx(12200.0, rel=1e-6)
+        assert result['minority_interest'] == 200.0
+        assert result['minority_interest_source'] == 'stock_info.minorityInterest'
+        assert result['minority_interest_note'] == ''
+        assert result['fair_value_per_share'] == pytest.approx(122.0, rel=1e-6)
+
+    @patch('services.valuation.get_financial_currency', return_value='USD')
+    @patch('services.valuation.convert_currency', side_effect=lambda amount, *_: amount)
+    @patch('services.valuation.project_fcf_growth_from_historical', return_value=([0.0], []))
+    @patch('services.valuation._get_net_debt', return_value=100.0)
+    @patch('services.valuation._get_current_fcf', return_value=1000.0)
+    @patch('services.valuation.get_financial_statements')
+    @patch('services.valuation.get_or_create_stock_info')
+    def test_missing_minority_interest_defaults_to_zero_with_note(
+        self,
+        mock_get_info,
+        mock_get_statements,
+        _mock_current_fcf,
+        _mock_net_debt,
+        _mock_growth,
+        _mock_convert,
+        _mock_financial_currency,
+    ):
+        mock_get_info.return_value = {
+            'sharesOutstanding': 100,
+            'currentPrice': 10.0,
+            'currency': 'USD',
+            'financialCurrency': 'USD',
+        }
+
+        mock_cashflow = pd.DataFrame({'2024-12-31': [1000.0]}, index=['Free Cash Flow'])
+        mock_balance = pd.DataFrame({'2024-12-31': [5000.0]}, index=['Total Equity'])
+
+        def _mock_statements(_ticker, statement_type='cashflow'):
+            if statement_type == 'cashflow':
+                return {'cashflow': mock_cashflow}
+            if statement_type == 'balance':
+                return {'balance': mock_balance}
+            return {}
+
+        mock_get_statements.side_effect = _mock_statements
+
+        result = do_dcf_valuation(
+            ticker='TEST',
+            forecast_years=1,
+            terminal_growth_rate=0.02,
+            discount_rate=0.10,
+            fcf_growth_rates=[0.0],
+            conservative_factor=1.0,
+        )
+
+        # Same EV baseline as previous test; only net debt is deducted.
+        assert result['equity_value'] == pytest.approx(12400.0, rel=1e-6)
+        assert result['minority_interest'] == 0.0
+        assert result['minority_interest_source'] == 'unavailable'
+        assert 'assumed 0' in result['minority_interest_note']
+        assert result['fair_value_per_share'] == pytest.approx(124.0, rel=1e-6)
     
     def test_calculate_historical_fcf_growth_rates_missing_operating_cf(self):
         """Test when Operating Cash Flow is missing (should default to 0)."""

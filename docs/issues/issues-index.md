@@ -8,4 +8,9 @@
 | BUG-006 |	bug | high | resolved |	The recommendations do not contain saved PDF|  |
 | BUG-007 | bug | high | resolved | Search returns non-recommendation pages for stock-pick intents | Added discovery query constraints and low-intent filtering before analysis |
 | FEAT-008 | feature | high | resolved | Collect recommendations that mention stock name without ticker | Added stock-name evidence gating and deterministic ticker inference fallback |
-| FEAT-009 | feature | high | new | Add DB-backed company-name pre-LLM validation | Use stock table names as weighted signal before LLM analysis |
+| FEAT-009 | feature | medium | new | Add DB-backed company-name pre-LLM validation | Use stock table names as weighted signal before LLM analysis |
+| BUG-010 | bug | high | new | Incorrect FCF used for IBKR | FCF used is 15x of the actual FCF |
+| BUG-011 | bug | high | resolved | Missing minority-interest adjustment in DCF equity value | DCF now deducts minority interest in equity bridge and exposes diagnostics |
+| BUG-012 | bug | high | new | Add financial-sector guardrail for generic DCF | Exclude or warn for financial-sector tickers where generic enterprise DCF is unreliable |
+| BUG-014 | bug | high | new | FCF should reflect parent common share, not consolidated | Adjust starting FCF by parent ownership % before projection |
+| FEAT-013 | feature | medium | new | Persist minority interest as stock-level property | Store minority-interest amount/source in DB for deterministic valuation reuse |

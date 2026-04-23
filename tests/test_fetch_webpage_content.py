@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from recommendations.workflow import fetch_webpage_content, scrape_single_page
+from recommendations.workflow import fetch_webpage_content, scrape_single_page, scrape_node
 from repositories.recommendations_db import RecommendationsDatabase
 
 
@@ -323,3 +323,107 @@ class TestScrapeSinglePagePdfFallback:
         assert result is not None
         assert result["pdf_content"] is None
         mock_fetch_fallback.assert_not_called()
+
+
+class TestScrapeSinglePageChallengePages:
+    def test_challenge_text_is_blocked_and_not_extracted(self, tmp_path):
+        """Challenge/interstitial text should fail fast, persist a blocked rule, and skip extraction."""
+        search_result = {
+            "href": "https://seekingalpha.com/article/4891681-public-storage-we-took-large-position-in-6-6-percent-yielding-preferreds",
+            "title": "Seeking Alpha example",
+            "excerpt_date": "2026-04-17",
+        }
+        headers = {"User-Agent": "test-agent", "Accept-Encoding": "gzip, deflate"}
+        db = RecommendationsDatabase(str(tmp_path / "challenge_pages.duckdb"))
+
+        challenge_text = (
+            "Before we continue... Press & Hold to confirm you are a human (and not a bot). "
+            "Reference ID 0f5d6679-3ee8-11f1-a8df-d7e721de136c"
+        )
+        html = f"<html><body><main><p>{challenge_text}</p></main></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+
+        with patch(
+            "recommendations.workflow.fetch_webpage_content",
+            return_value=(challenge_text, soup, html, None),
+        ), patch("recommendations.workflow.extract_stock_recommendations_with_llm") as mock_extract:
+            result = scrape_single_page(search_result, headers, db)
+
+        assert result is not None
+        assert result["fetch_status"] == "blocked_terminal"
+        assert result["fetch_metrics"]["blocked_terminal_failures"] == 1
+        assert result["fetch_metrics"]["blocked_challenge_pages"] == 1
+        assert "Anti-bot challenge detected" in result["fetch_error"]
+        assert result["stock_recommendations"] == []
+        mock_extract.assert_not_called()
+
+        blocked_match = db.get_blocked_url_match(search_result["href"])
+        assert blocked_match is not None
+        assert blocked_match["reason"] == "challenge_page"
+
+
+class TestScrapeNodeChallengeFallback:
+    def test_scrape_node_continues_with_alternate_sources_when_one_is_challenge_blocked(self):
+        """A blocked challenge page should not stop scraping of other eligible sources."""
+        state = {
+            "query": "",
+            "executed_queries": [],
+            "search_results": [],
+            "filtered_search_results": [],
+            "expanded_search_results": [
+                {
+                    "href": "https://blocked.example.com/challenge",
+                    "title": "Blocked source",
+                    "contains_stocks": True,
+                    "excerpt_date": "2026-04-17",
+                },
+                {
+                    "href": "https://open.example.com/analysis",
+                    "title": "Open source",
+                    "contains_stocks": True,
+                    "excerpt_date": "2026-04-17",
+                },
+            ],
+            "scraped_pages": [],
+            "status": "",
+            "error": "",
+            "fetch_metrics": {},
+            "extraction_metrics": {},
+        }
+
+        blocked_result = {
+            "url": "https://blocked.example.com/challenge",
+            "webpage_title": "Blocked source",
+            "webpage_date": "2026-04-17",
+            "page_text": "",
+            "pdf_content": None,
+            "stock_recommendations": [],
+            "fetch_status": "blocked_terminal",
+            "fetch_error": "Anti-bot challenge detected",
+            "fetch_metrics": {"blocked_terminal_failures": 1, "blocked_challenge_pages": 1},
+            "extraction_metrics": {},
+        }
+        ok_result = {
+            "url": "https://open.example.com/analysis",
+            "webpage_title": "Open source",
+            "webpage_date": "2026-04-17",
+            "page_text": "Some valid analysis text",
+            "pdf_content": None,
+            "stock_recommendations": [{"ticker": "AAPL"}],
+            "fetch_status": "ok",
+            "fetch_metrics": {},
+            "extraction_metrics": {},
+        }
+
+        with patch("recommendations.workflow.RecommendationsDatabase", return_value=MagicMock()), patch(
+            "recommendations.workflow.scrape_single_page",
+            side_effect=[blocked_result, ok_result],
+        ), patch("recommendations.workflow.MAX_WORKERS", 1):
+            result = scrape_node(state)
+
+        assert len(result["scraped_pages"]) == 2
+        assert result["fetch_metrics"]["blocked_terminal_failures"] == 1
+        assert result["fetch_metrics"]["blocked_challenge_pages"] == 1
+        assert "blocked pages" in result["status"]
+        assert "challenge pages" in result["status"]
+        assert "Scraped 1 pages with 1 recommendations" in result["status"]

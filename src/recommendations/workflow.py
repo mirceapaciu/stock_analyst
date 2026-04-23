@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 LOW_QUALITY_RECOMMENDATION_THRESHOLD = 40
 TERMINAL_HTTP_STATUS_CODES = {401, 403, 404, 410}
+CHALLENGE_PAGE_REASON = 'challenge_page'
 
 DISCOVERY_INTENT_PHRASES = (
     "undervalued stocks",
@@ -94,18 +95,20 @@ DISCOVERY_DOMAIN_PATH_DENYLIST = {
 
 @dataclass
 class TerminalFetchFailure(Exception):
-    """Raised when a URL is blocked by a cached rule or terminal HTTP failure."""
+    """Raised when a URL is blocked by a cached rule or terminal HTTP/challenge failure."""
 
     url: str
     reason: str
     status_code: Optional[int] = None
     matched_pattern: Optional[str] = None
     cached: bool = False
+    failure_type: str = 'terminal_http'
 
     def metrics(self) -> Dict[str, int]:
-        if self.cached:
-            return {'blocked_cached_skips': 1}
-        return {'blocked_terminal_failures': 1}
+        metrics = {'blocked_cached_skips': 1} if self.cached else {'blocked_terminal_failures': 1}
+        if self.failure_type == CHALLENGE_PAGE_REASON:
+            metrics['blocked_challenge_pages'] = 1
+        return metrics
 
 # Pydantic models for LLM response validation
 class RecommendationQuality(BaseModel):
@@ -955,6 +958,53 @@ def _get_request_status_code(error: Exception) -> Optional[int]:
     return getattr(response, 'status_code', None)
 
 
+def detect_challenge_page_text(page_text: str, original_html: str = '') -> Optional[str]:
+    """Return matching anti-bot challenge marker when interstitial content is detected."""
+    normalized_text = " ".join(str(page_text or '').lower().split())
+    normalized_html = " ".join(str(original_html or '').lower().split())
+    haystack = f"{normalized_text} {normalized_html}".strip()
+
+    if not haystack:
+        return None
+
+    if "press & hold to confirm you are a human" in haystack:
+        return "press & hold to confirm you are a human"
+
+    if "press and hold to confirm you are a human" in haystack:
+        return "press and hold to confirm you are a human"
+
+    if "captcha" in haystack and "verify you are a human" in haystack:
+        return "captcha verify you are a human"
+
+    if "checking if the site connection is secure" in haystack and "cloudflare" in haystack:
+        return "cloudflare checking if the site connection is secure"
+
+    if "reference id" in haystack and "confirm you are a human" in haystack:
+        return "reference id confirm you are a human"
+
+    return None
+
+
+def _raise_if_challenge_page(
+    url: str,
+    page_text: str,
+    original_html: str,
+    db: RecommendationsDatabase,
+) -> None:
+    """Persist blocked URL rules and raise terminal failure for challenge/interstitial pages."""
+    marker = detect_challenge_page_text(page_text, original_html)
+    if not marker:
+        return
+
+    patterns = db.record_blocked_url(url, reason=CHALLENGE_PAGE_REASON)
+    logger.info(f"Persisted challenge blocked URL rules for {url}: {patterns}")
+    raise TerminalFetchFailure(
+        url=url,
+        reason=f"Anti-bot challenge detected: {marker}",
+        failure_type=CHALLENGE_PAGE_REASON,
+    )
+
+
 def _build_blocked_page_result(
     search_result: Dict,
     reason: str,
@@ -995,24 +1045,29 @@ def fetch_webpage_content_with_policy(
     """Fetch webpage with blocked-URL caching and bounded browser fallback for terminal failures."""
     blocked_match = db.get_blocked_url_match(url)
     if blocked_match:
+        failure_type = CHALLENGE_PAGE_REASON if blocked_match.get('reason') == CHALLENGE_PAGE_REASON else 'terminal_http'
         raise TerminalFetchFailure(
             url=url,
             reason=f"Blocked URL rule matched: {blocked_match['pattern']}",
             status_code=blocked_match.get('status_code'),
             matched_pattern=blocked_match['pattern'],
             cached=True,
+            failure_type=failure_type,
         )
 
     domain = urlparse(url).netloc
     browser_mode = db.needs_browser_rendering(domain) if use_browser is None else use_browser
 
     try:
-        return fetch_webpage_content(url, headers, use_browser=browser_mode)
+        page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=browser_mode)
+        _raise_if_challenge_page(url, page_text, original_html, db)
+        return page_text, soup, original_html, pdf_bytes
     except ValueError as error:
         error_text = str(error)
         if "Brotli-compressed" in error_text and not browser_mode:
             logger.warning(f"Brotli encoding issue for {url}, retrying with browser rendering")
             page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
+            _raise_if_challenge_page(url, page_text, original_html, db)
             logger.info(f"Browser rendering successful for {domain}, updating database")
             db.upsert_website(domain, is_usable=1, requires_browser=1)
             return page_text, soup, original_html, pdf_bytes
@@ -1024,6 +1079,7 @@ def fetch_webpage_content_with_policy(
             logger.warning(f"403 Forbidden for {url}, retrying once with browser rendering")
             try:
                 page_text, soup, original_html, pdf_bytes = fetch_webpage_content(url, headers, use_browser=True)
+                _raise_if_challenge_page(url, page_text, original_html, db)
                 logger.info(f"Browser rendering successful for {domain}, updating database")
                 db.upsert_website(domain, is_usable=1, requires_browser=1)
                 return page_text, soup, original_html, pdf_bytes
@@ -2022,6 +2078,8 @@ def scrape_node(state: WorkflowState) -> WorkflowState:
     blocked_pages = fetch_metrics.get('blocked_terminal_failures', 0) + fetch_metrics.get('blocked_cached_skips', 0)
     if blocked_pages > 0:
         status_msg += f", {blocked_pages} blocked pages"
+    if fetch_metrics.get('blocked_challenge_pages', 0) > 0:
+        status_msg += f", {fetch_metrics['blocked_challenge_pages']} challenge pages"
     if extraction_metrics.get('low_quality_filtered', 0) > 0:
         status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
     if extraction_metrics.get('hallucinated_tickers', 0) > 0:
@@ -2786,6 +2844,8 @@ def output_node(state: WorkflowState) -> WorkflowState:
     blocked_pages = fetch_metrics.get('blocked_terminal_failures', 0) + fetch_metrics.get('blocked_cached_skips', 0)
     if blocked_pages > 0:
         status_msg += f", {blocked_pages} blocked pages"
+    if fetch_metrics.get('blocked_challenge_pages', 0) > 0:
+        status_msg += f", {fetch_metrics['blocked_challenge_pages']} challenge pages"
     if extraction_metrics.get('low_quality_filtered', 0) > 0:
         status_msg += f", {extraction_metrics['low_quality_filtered']} low-quality filtered"
     if extraction_metrics.get('hallucinated_tickers', 0) > 0:

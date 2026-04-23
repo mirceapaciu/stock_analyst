@@ -15,3 +15,4 @@
 | BUG-014 | bug | high | resolved | FCF should reflect parent common share, not consolidated | Adjust starting FCF by parent ownership % before projection |
 | FEAT-013 | feature | medium | resolved | Persist minority interest as stock-level property | Store minority-interest amount/source in DB for deterministic valuation reuse |
 | FEAT-015 | feature | high | new | Add Residual Income valuation tab with DB caching | New RI model valuation flow, cached similarly to DCF with reusable repository patterns |
+| BUG-016 | bug | high | resolved | Detect anti-bot challenge pages and fallback to alternate sources | Fail fast on challenge text, persist blocked URL rules, and continue with alternate eligible sources |
